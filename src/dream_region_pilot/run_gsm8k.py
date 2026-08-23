@@ -7,14 +7,14 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
+from .benchmarks import load_benchmark, prepare_example, score_generation
 from .config import load_config
-from .decoding import decode_regional, decode_vanilla
+from .decoding import decode_mean_field_repro, decode_regional, decode_vanilla
 from .dependencies import DAPDDreamAdapter
-from .evaluation import extract_answer, write_summary
+from .evaluation import write_summary
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,13 +96,6 @@ def encode_prompt(tokenizer, prompt: str, device: torch.device) -> torch.Tensor:
     ).to(device)
 
 
-def load_gsm8k(config: dict[str, Any], limit_override: int | None):
-    data = config["data"]
-    dataset = load_dataset(data["dataset"], data["subset"], split=data["split"])
-    limit = int(limit_override if limit_override is not None else data["limit"])
-    return dataset.select(range(min(limit, len(dataset))))
-
-
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
@@ -159,7 +152,9 @@ def main() -> None:
         "async_lag2",
         "async_lag4",
         "wavefront_probe",
+        "loose_wavefront",
         "flowblock_proxy",
+        "mean_field_repro",
         "controlled_position",
         "controlled_dapd",
         "controlled_jsd",
@@ -183,7 +178,8 @@ def main() -> None:
                 rows.append(row)
                 completed.add((int(row["example_index"]), str(row["strategy"])))
 
-    dataset = load_gsm8k(config, args.limit)
+    dataset = load_benchmark(config["data"], args.limit)
+    task = str(config["data"].get("task", "gsm8k"))
     model, tokenizer = load_model(config["model"])
     dependency_config = config["dependency"]
     adapter = DAPDDreamAdapter(
@@ -202,12 +198,13 @@ def main() -> None:
     with results_path.open("a", encoding="utf-8") as handle:
         progress = tqdm(total=total, desc="Dream region pilot")
         for example_index, source in enumerate(dataset):
-            question = str(source["question"])
+            example = prepare_example(config["data"], source)
+            question = example.question
             prompt_text = str(config["data"]["prompt_template"]).format(
                 question=question
             )
             prompt = encode_prompt(tokenizer, prompt_text, model.device)
-            reference = extract_answer(str(source["answer"]))
+            reference = example.reference_answer
             ordered = list(strategies)
             if bool(config["experiment"].get("rotate_strategy_order", True)):
                 offset = example_index % len(ordered)
@@ -222,6 +219,7 @@ def main() -> None:
                 if example_index < diagnostics_count and (
                     strategy.startswith("async_")
                     or strategy == "wavefront_probe"
+                    or strategy == "loose_wavefront"
                     or strategy == "flowblock_proxy"
                     or strategy.startswith("controlled_")
                 ):
@@ -234,6 +232,15 @@ def main() -> None:
                 if strategy == "vanilla":
                     generated = decode_vanilla(
                         model, tokenizer, prompt, config["generation"]
+                    )
+                elif strategy == "mean_field_repro":
+                    generated = decode_mean_field_repro(
+                        model,
+                        tokenizer,
+                        prompt,
+                        generation=config["generation"],
+                        adapter=adapter,
+                        mean_field=config.get("mean_field_baseline", {}),
                     )
                 else:
                     generated = decode_regional(
@@ -253,15 +260,19 @@ def main() -> None:
                         ),
                         probe=probe_config,
                     )
-                prediction = extract_answer(generated["generation"])
+                prediction, correct, scoring_method = score_generation(
+                    config["data"], generated["generation"], reference
+                )
                 row = {
                     "example_index": example_index,
+                    "task": task,
                     "strategy": strategy,
                     "seed": seed,
                     "question": question,
                     "reference_answer": reference,
                     "predicted_answer": prediction,
-                    "correct": prediction == reference,
+                    "correct": correct,
+                    "scoring_method": scoring_method,
                     **generated,
                 }
                 handle.write(json.dumps(row, ensure_ascii=True) + "\n")
@@ -271,9 +282,10 @@ def main() -> None:
         progress.close()
 
     metadata = {
-        "artifact_type": "dream_fixed_region_async_pilot",
+        "artifact_type": "dream_regional_async_reasoning_pilot",
         "config": config,
         "examples": len(dataset),
+        "task": task,
         "strategies": strategies,
         "model_resolved_commit": getattr(model.config, "_commit_hash", None),
         "dapd_revision": adapter.revision,
@@ -287,13 +299,16 @@ def main() -> None:
             "flowblock_proxy transfers only W=2, theta_spawn=0.60, and token-readiness probability 0.50 into the Dream regional admission harness; it is not an implementation of FlowBlock's T2T editing, block-causal KV cache, or threshold commit policy.",
             "The 15% spawn threshold is theta_spawn; the separate token confidence threshold defaults to 0.5, matching FlowBlock's reported math setting but not Dream's entropy commit rule.",
             "Mean-Field JSD is diagnostic-only in wavefront_probe; controlled_jsd and controlled_combo use its persistent region edges for pausing decisions but never change admission or token scoring.",
+            "loose_wavefront is the graph-free W=8, theta_spawn=0.15 readiness-only ablation; unlike controlled_position it has no permanent positional bounded-skew edges.",
+            "mean_field_repro implements Algorithm 1 from arXiv:2606.15805 with exact JSD inside sequential active blocks. The paper's linked GitHub repository currently returns 404, so this is not labelled official code.",
+            "The Mean-Field pseudocode does not define an empty-commit fallback. This reproduction commits the maximum-intensity token to guarantee progress and logs every such event.",
             "The all-canvas Mean-Field signal uses a top-k-union plus shared-tail approximation; retained probability mass is logged and paper_exact is false unless top-k equals the vocabulary size.",
             "Controlled modes activate an edge only after both endpoints reveal a token and the edge persists for two graph observations.",
             "Controlled modes normally advance every unblocked admitted region; they do not round-robin or graph-color components.",
             "controlled_position uses the identical admission and bounded-skew controller without dynamic DAPD/JSD edges, isolating whether graph control helps beyond positional staggering.",
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
-            "GSM8K uses a zero-shot chat prompt requesting a #### numeric answer; this is not claimed to reproduce DAPD paper evaluation prompting.",
+            "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",
         ],
     }
     (output_dir / "metadata.json").write_text(

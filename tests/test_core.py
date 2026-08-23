@@ -1,5 +1,6 @@
 import torch
 
+from dream_region_pilot.benchmarks import prepare_example, score_generation
 from dream_region_pilot.dependencies import (
     aggregate_region_dependencies,
     threshold_region_graph,
@@ -7,7 +8,11 @@ from dream_region_pilot.dependencies import (
 from dream_region_pilot.evaluation import summarize
 from dream_region_pilot.regions import build_fixed_regions
 from dream_region_pilot.scheduler import RegionScheduler, parse_strategy
-from dream_region_pilot.mean_field import topk_tail_jsd_dependency
+from dream_region_pilot.mean_field import (
+    exact_jsd_interaction,
+    mean_field_commit_indices,
+    topk_tail_jsd_dependency,
+)
 
 
 def test_fixed_regions_exclude_prompt_by_construction():
@@ -17,6 +22,21 @@ def test_fixed_regions_exclude_prompt_by_construction():
         tuple(range(32, 64)),
         tuple(range(64, 70)),
     ]
+
+
+def test_asdiv_combines_body_and_question_and_scores_text_or_number():
+    data = {"task": "asdiv"}
+    numeric = prepare_example(
+        data,
+        {"body": "There are 7 red and 2 green apples.", "question": "How many?", "answer": "9 (apples)"},
+    )
+    assert numeric.question == "There are 7 red and 2 green apples.\nHow many?"
+    assert score_generation(data, "#### 9", numeric.reference_answer)[1]
+    categorical = prepare_example(
+        data,
+        {"body": "Ann has more.", "question": "Who?", "answer": "Ann"},
+    )
+    assert score_generation(data, "#### Ann", categorical.reference_answer)[1]
 
 
 def test_region_aggregators_and_positional_orientation():
@@ -83,6 +103,7 @@ def test_flowblock_proxy_uses_a_two_region_active_window():
 
 def test_new_comparison_strategy_names_parse_without_changing_mode():
     assert parse_strategy("flowblock_proxy") == ("flowblock_proxy", 0)
+    assert parse_strategy("loose_wavefront") == ("loose_wavefront", 0)
     assert parse_strategy("controlled_position") == ("controlled_position", 0)
 
 
@@ -101,6 +122,34 @@ def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():
     assert matrix[0, 1] > matrix[0, 2]
     assert raw_matrix[0, 1] > raw_matrix[0, 2]
     assert metadata["paper_exact"] is True
+
+
+def test_exact_mean_field_algorithm_selects_and_has_progress_fallback():
+    logits = torch.tensor([[8.0, 0.0, 0.0], [7.0, 0.0, 0.0]])
+    interaction = exact_jsd_interaction(logits, pair_chunk_size=1)
+    assert torch.allclose(interaction, interaction.T)
+    assert torch.equal(interaction.diag(), torch.zeros(2))
+    selected, intensity, fallback = mean_field_commit_indices(
+        logits, threshold=0.99, iterations=2, pair_chunk_size=1
+    )
+    assert selected.numel() >= 1
+    assert intensity.shape == (2,)
+    assert isinstance(fallback, bool)
+
+
+def test_loose_wavefront_has_no_positional_backpressure_edges():
+    regions = build_fixed_regions(8, 2)
+    scheduler = RegionScheduler(
+        regions,
+        mode="loose_wavefront",
+        max_active_regions=4,
+        spawn_readiness=0.15,
+    )
+    scheduler.admitted_count = 4
+    assert [
+        region.index for region in scheduler.regions_allowed_to_advance(2)
+    ] == [0, 1, 2, 3]
+    assert scheduler.last_control_edges == set()
 
 
 def test_controlled_scheduler_prioritizes_a_lagging_child_without_equalizing():

@@ -7,6 +7,70 @@ backpressure.
 Status: implemented locally, deliberately **not run**. No model, dataset,
 environment setup, test, build, or experiment was executed on this PC.
 
+## Expanded baseline and dataset probe
+
+The next run separates the result we actually need to explain:
+
+```text
+loose_wavefront       W=8, theta=0.15, no progress-skew or graph control
+controlled_position   same admission plus adjacent positional bounded skew
+controlled_dapd       positional control plus dynamic DAPD edges
+controlled_jsd        positional control plus dynamic JSD edges
+controlled_combo      positional control plus persistent DAPD intersection JSD
+mean_field_repro      paper Algorithm 1 commit policy, exact JSD per active block
+flowblock_proxy       Dream-side W=2, theta=0.60 admission proxy
+vanilla               official Dream diffusion_generate
+```
+
+`loose_wavefront` is the missing ablation. If it also reaches roughly the same
+accuracy/NFE as `controlled_position`, the large-window loose gate—not bounded
+skew or dependencies—explains the earlier result. If it drops while position
+or dependency control survives, the controller is doing real work.
+
+The Mean-Field paper's code link currently points to
+`github.com/AmeenAli/MDP`, which returns 404. `mean_field_repro` is therefore a
+paper-faithful reproduction, not official code: exact full-vocabulary JSD,
+log-top1/top2 unary margin, two mean-field updates, and threshold 0.90 inside
+sequential 32-token active blocks. The one choice absent from its pseudocode is
+deadlock handling: if no intensity crosses the threshold, the reproduction
+commits the maximum-intensity token and logs
+`mean_field_forced_progress_events`.
+
+After pulling on Vast, refresh the environment once (this also checks out the
+official FlowBlock source without installing its incompatible environment):
+
+```bash
+cd /workspace/dream-region-pilot
+git pull
+bash scripts/setup_vast.sh
+```
+
+Run two examples on each distribution first:
+
+```bash
+bash scripts/run_expanded_probe.sh configs/gsm8k_50.yaml \
+  outputs/gsm8k_expanded_probe_2
+bash scripts/run_expanded_probe.sh configs/asdiv_50.yaml \
+  outputs/asdiv_expanded_probe_2
+bash scripts/run_expanded_probe.sh configs/math500_50.yaml \
+  outputs/math500_expanded_probe_2
+```
+
+If those complete, run 50 examples of the new datasets:
+
+```bash
+bash scripts/run_reasoning_task_50.sh configs/asdiv_50.yaml \
+  outputs/asdiv_expanded_50
+bash scripts/run_reasoning_task_50.sh configs/math500_50.yaml \
+  outputs/math500_expanded_50
+```
+
+MATH-500 uses `math-verify==0.9.0`, matching FlowBlock's pinned evaluator
+dependency. ASDiv uses normalized numeric/fraction comparison when the gold is
+numeric and normalized final-text comparison for its categorical answers.
+These are the two additional math datasets shared with FlowBlock's official
+suite.
+
 ## Minimal implementation plan
 
 1. Use Dream-v0-Instruct-7B and its ordinary shifted logits and confidence
@@ -102,6 +166,8 @@ This runs the same two examples under:
 ```text
 vanilla               official Dream decoder
 flowblock_proxy       W=2 and 60% readiness admission proxy
+loose_wavefront       W=8 and 15% readiness, no graph/backpressure
+mean_field_repro      published Mean-Field commit algorithm reproduction
 controlled_position   W=8 positional bounded skew, no dynamic graph
 controlled_dapd       persistent DAPD edges
 controlled_jsd        persistent Mean-Field/JSD mean edges
@@ -135,6 +201,8 @@ The headline pilot now compares:
 ```text
 vanilla                 official Dream diffusion_generate
 flowblock_proxy         W=2, theta_spawn=0.60, token readiness p>=0.50
+loose_wavefront         W=8, theta_spawn=0.15, readiness only
+mean_field_repro        exact-JSD Algorithm 1 reproduction, block size 32
 controlled_position     W=8, theta_spawn=0.15, positional bounded skew only
 controlled_dapd         position control plus persistent DAPD edges
 controlled_jsd          position control plus persistent Mean-Field/JSD edges
@@ -154,6 +222,21 @@ dependency modes but never extracts or activates dynamic graph edges. A
 dependency strategy must improve on this row—not merely on the aggressive
 wavefront—to support the graph hypothesis.
 
+The official FlowBlock source is pinned under `external/FlowBlock` by setup.
+It cannot be installed into the Dream virtual environment: its released engine
+targets LLaDA-2.1-mini, SGLang/vLLM, and documents roughly 80 GB VRAM. On a
+suitable GPU, create its separate documented environment and invoke its own
+comparison entry point through:
+
+```bash
+bash scripts/run_official_flowblock.sh /path/to/LLaDA2.1-mini \
+  --benchmark gsm8k --num-samples 50 --batch-size 1
+```
+
+That result is an official same-LLaDA FlowBlock-vs-LLaDA comparison. It is not
+merged numerically with Dream TPS because model, canvas length, attention/KV
+behavior, and hardware requirements differ.
+
 ## Vast setup
 
 An RTX 4090 (24 GB) is the intended pilot GPU. Use batch size 1 (the harness
@@ -170,9 +253,10 @@ cd /workspace/dream-region-pilot
 bash scripts/setup_vast.sh
 ```
 
-The setup creates `.venv`, installs the package, and checks out public DAPD at
-the pinned revision under `external/DAPD`. Hugging Face downloads the Dream
-checkpoint and GSM8K only when the experiment command is run.
+The setup creates `.venv`, installs the package, checks out public DAPD at the
+pinned revision under `external/DAPD`, and checks out official FlowBlock
+source-only under `external/FlowBlock`. Hugging Face downloads the Dream
+checkpoint and selected benchmark only when an experiment command is run.
 
 The setup expects `git`, Python 3.10--3.12 with `venv`, a working NVIDIA
 driver, and outbound access to GitHub, PyPI, and Hugging Face. If the first
@@ -209,19 +293,19 @@ probe before choosing the threshold or launching the full sweep.
 
 ```bash
 cd /workspace/dream-region-pilot
-bash scripts/run_gsm8k_50.sh outputs/gsm8k_controlled_50_r32
+bash scripts/run_gsm8k_50.sh outputs/gsm8k_expanded_50_r32
 ```
 
 The strategy set is:
 
 ```text
-vanilla flowblock_proxy controlled_position controlled_dapd controlled_jsd controlled_combo
+vanilla flowblock_proxy loose_wavefront mean_field_repro controlled_position controlled_dapd controlled_jsd controlled_combo
 ```
 
 Resume an interrupted run with:
 
 ```bash
-bash scripts/run_gsm8k_50.sh outputs/gsm8k_controlled_50_r32 --resume
+bash scripts/run_gsm8k_50.sh outputs/gsm8k_expanded_50_r32 --resume
 ```
 
 To test another supported fixed region size, copy the YAML and change

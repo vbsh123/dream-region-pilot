@@ -6,14 +6,14 @@ model:
   trust_remote_code: true
 
 data:
-  task: gsm8k
-  dataset: openai/gsm8k
-  subset: main
+  task: math500
+  dataset: HuggingFaceH4/MATH-500
+  subset: null
   split: test
   limit: 50
   prompt_template: |-
-    Solve the following math problem. Show your reasoning and end with exactly
-    "#### <number>" on its own line.
+    Solve the following math problem. Show your reasoning and put only the
+    final answer in \boxed{{}}.
 
     {question}
 
@@ -42,31 +42,23 @@ dependency:
   threshold: 0.005
 
 probe:
-  # W=8 is the maximum active-region window for the 8 x 32-token canvas.
   max_active_regions: 8
-  # FlowBlock-style admission: fraction of remaining frontier masks whose
-  # top-token probability reaches the separate confidence threshold below.
   spawn_readiness: 0.15
   readiness_confidence_threshold: 0.50
   max_progress_gap: 8
   edge_persistence: 2
-  # Cross-model admission proxy only: W=2 and theta_spawn=0.60. It retains
-  # Dream's full visibility and entropy commit rule, so it is not FlowBlock.
   flowblock_proxy:
     max_active_regions: 2
     spawn_readiness: 0.60
     readiness_confidence_threshold: 0.50
   mean_field:
     enabled: true
-    # The paper is exact over vocabulary but uses a small (20-token) active
-    # block. For the 256-token probe, use the documented top-k + tail proxy.
     topk: 256
     pair_chunk_size: 128
     thresholds: [0.50, 0.70, 0.80, 0.90, 0.95]
     combination_threshold: 0.90
 
 mean_field_baseline:
-  # Algorithm 1 reproduction. The paper's linked repository currently 404s.
   block_size: 32
   threshold: 0.90
   iterations: 2

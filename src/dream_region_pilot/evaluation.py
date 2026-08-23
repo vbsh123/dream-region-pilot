@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-NUMBER = r"-?\d[\d,]*(?:\.\d+)?"
+NUMBER = r"-?\d[\d,]*(?:(?:\.\d+)|(?:/\d+))?"
 
 
 def extract_answer(text: str) -> str | None:
@@ -80,6 +80,11 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 / count,
                 "mean_mean_field_seconds": sum(
                     float(row.get("mean_field_seconds", 0.0)) for row in selected
+                )
+                / count,
+                "mean_mean_field_forced_progress_events": sum(
+                    int(row.get("mean_field_forced_progress_events", 0))
+                    for row in selected
                 )
                 / count,
                 "mean_iterations_with_blocking": sum(

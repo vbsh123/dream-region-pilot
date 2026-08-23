@@ -160,6 +160,25 @@ These are not claims from DAPD or Dream:
     edge set. Active-region membership is also retained because an edge removed
     solely when one region finishes is not evidence that semantic dependence
     disappeared.
+21. **The aggressive admission-only control is now explicit.**
+    `loose_wavefront` uses W=8 and theta_spawn=0.15 but no positional or
+    dependency backpressure. It directly tests whether GSM8K made a large,
+    loose wavefront look safer than it is.
+22. **Mean-Field is a separate commit-policy baseline.** `mean_field_repro`
+    follows published Algorithm 1 with exact full-vocabulary JSD within one
+    sequential active block, tau=0.90, R=2, and block size 32. It must not be
+    interpreted as our JSD region graph: the former selects tokens to commit;
+    the latter only adds scheduler backpressure.
+23. **Mean-Field source and empty-set behavior are unresolved upstream.** The
+    paper's linked repository returns 404, and its pseudocode does not define a
+    zero-token commit case. The reproduction selects the maximum-q token only
+    in that case, guaranteeing progress, and reports how often this choice was
+    exercised. A high fallback count invalidates claims of paper fidelity.
+24. **The first cross-dataset extension is math-only.** MATH-500 and ASDiv
+    overlap FlowBlock's released benchmark suite and can be scored without
+    executing model-generated programs. MATH-500 uses FlowBlock's pinned
+    `math-verify==0.9.0`; code benchmarks remain deferred because their
+    evaluators execute untrusted generated Python.
 
 ## Decision rule after the dynamic graph probe
 

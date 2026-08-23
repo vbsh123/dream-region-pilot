@@ -5,12 +5,13 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 source .venv/bin/activate
 
-OUTPUT_DIR="${1:-outputs/gsm8k_expanded_50_r32}"
-shift || true
+CONFIG="${1:?usage: run_reasoning_task_50.sh CONFIG OUTPUT_DIR [extra args]}"
+OUTPUT_DIR="${2:?usage: run_reasoning_task_50.sh CONFIG OUTPUT_DIR [extra args]}"
+shift 2
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 python -m dream_region_pilot.run_gsm8k \
-  --config configs/gsm8k_50.yaml \
+  --config "$CONFIG" \
   --output-dir "$OUTPUT_DIR" \
   --limit 50 \
   --strategies \

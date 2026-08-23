@@ -3,5 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 outputs/
+external/*
+!external/README.md
 data/*.jsonl
 !data/.gitkeep

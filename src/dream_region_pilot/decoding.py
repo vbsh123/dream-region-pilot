@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from .commit import commit_active_regions
 from .dependencies import DAPDDreamAdapter, graph_summary, make_dependency_snapshot
 from .diagnostics import ExampleDiagnostics
-from .mean_field import topk_tail_jsd_dependency
+from .mean_field import mean_field_commit_indices, topk_tail_jsd_dependency
 from .regions import build_fixed_regions, refresh_remaining_masks
 from .scheduler import RegionScheduler, parse_strategy
 
@@ -138,6 +138,115 @@ def decode_vanilla(
         "dependency_signal_seconds": 0.0,
         "diagnostic_seconds_excluded_from_wall_clock": 0.0,
         "schedule_approximation": False,
+    }
+
+
+@torch.no_grad()
+def decode_mean_field_repro(
+    model,
+    tokenizer,
+    prompt: torch.Tensor,
+    *,
+    generation: dict[str, Any],
+    adapter: DAPDDreamAdapter,
+    mean_field: dict[str, Any],
+) -> dict[str, Any]:
+    """Paper-faithful Algorithm 1 reproduction over sequential active blocks.
+
+    The paper's linked implementation is unavailable (GitHub returns 404), so
+    this is deliberately named a reproduction rather than an official run.
+    """
+    device = prompt.device
+    prompt_length = prompt.shape[1]
+    generation_length = int(generation["max_new_tokens"])
+    block_size = int(mean_field.get("block_size", 32))
+    threshold = float(mean_field.get("threshold", 0.9))
+    iterations = int(mean_field.get("iterations", 2))
+    pair_chunk_size = int(mean_field.get("pair_chunk_size", 16))
+    if block_size <= 0:
+        raise ValueError("mean_field_baseline.block_size must be positive")
+
+    mask_id = mask_token_id(model, tokenizer)
+    tokens = F.pad(prompt, (0, generation_length), value=mask_id)
+    blocks = build_fixed_regions(generation_length, block_size)
+    nfe = 0
+    fallback_count = 0
+    committed_per_forward: list[int] = []
+    selection_seconds = 0.0
+
+    synchronize(device)
+    started = time.perf_counter()
+    for block in blocks:
+        relative = torch.tensor(
+            block.token_indices, dtype=torch.long, device=device
+        )
+        while bool((tokens[0, prompt_length + relative] == mask_id).any()):
+            logits = adapter.forward_logits(model, tokens)
+            nfe += 1
+            masked_relative = relative[
+                tokens[0, prompt_length + relative] == mask_id
+            ]
+            active_logits = logits[0, prompt_length + masked_relative]
+            synchronize(device)
+            selection_started = time.perf_counter()
+            selected_rows, _, used_fallback = mean_field_commit_indices(
+                active_logits,
+                threshold=threshold,
+                iterations=iterations,
+                pair_chunk_size=pair_chunk_size,
+            )
+            synchronize(device)
+            selection_seconds += time.perf_counter() - selection_started
+            chosen_relative = masked_relative.index_select(0, selected_rows)
+            predictions = active_logits.argmax(dim=-1).index_select(
+                0, selected_rows
+            )
+            tokens[0, prompt_length + chosen_relative] = predictions
+            count = int(selected_rows.numel())
+            committed_per_forward.append(count)
+            fallback_count += int(used_fallback)
+            if nfe > generation_length:
+                raise RuntimeError(
+                    "Mean-Field reproduction exceeded one forced-progress "
+                    "forward per canvas token"
+                )
+
+    synchronize(device)
+    elapsed = time.perf_counter() - started
+    response = tokens[0, prompt_length:]
+    text, effective_tokens = decode_response(tokenizer, response)
+    canvas_tokens = int(response.numel())
+    return {
+        "generation": text,
+        "response_token_ids": [
+            int(value) for value in response.detach().cpu().tolist()
+        ],
+        "nfe": nfe,
+        "global_forward_passes": nfe,
+        "average_tokens_committed_per_forward": canvas_tokens / nfe,
+        "tokens_committed_per_forward": committed_per_forward,
+        "canvas_tokens": canvas_tokens,
+        "effective_generated_tokens": effective_tokens,
+        "wall_clock_seconds": elapsed,
+        "canvas_tokens_per_second": canvas_tokens / elapsed if elapsed > 0 else None,
+        "effective_tokens_per_second": (
+            effective_tokens / elapsed if elapsed > 0 else None
+        ),
+        "forward_passes_per_second": nfe / elapsed if elapsed > 0 else None,
+        "dependency_recomputations": nfe,
+        "dependency_seconds": 0.0,
+        "mean_field_seconds": selection_seconds,
+        "dependency_signal_seconds": selection_seconds,
+        "diagnostic_seconds_excluded_from_wall_clock": 0.0,
+        "mean_field_threshold": threshold,
+        "mean_field_iterations": iterations,
+        "mean_field_block_size": block_size,
+        "mean_field_exact_jsd": True,
+        "mean_field_forced_progress_events": fallback_count,
+        "schedule_approximation": True,
+        "schedule_approximation_name": (
+            "mean_field_algorithm1_reproduction_sequential_blocks"
+        ),
     }
 
 
@@ -546,7 +655,7 @@ def decode_regional(
                 if mode == "flowblock_proxy"
                 else (
                     "loose_confidence_admission_plus_per_region_linear_time"
-                    if mode == "wavefront_probe"
+                    if mode in {"wavefront_probe", "loose_wavefront"}
                     else (
                         "persistent_dependency_bounded_progress_skew"
                         if mode in graph_controlled_modes

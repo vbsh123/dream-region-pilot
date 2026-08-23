@@ -14,6 +14,9 @@ def load_config(path: Path) -> dict[str, Any]:
         if not isinstance(config.get(section), dict):
             raise ValueError(f"Missing mapping section {section!r}")
     generation = config["generation"]
+    task = str(config["data"].get("task", "gsm8k"))
+    if task not in {"gsm8k", "asdiv", "math500"}:
+        raise ValueError("data.task must be gsm8k, asdiv, or math500")
     region_size = int(generation["region_size"])
     if region_size not in {16, 32, 64}:
         raise ValueError("Initial pilot region_size must be 16, 32, or 64")
@@ -49,4 +52,17 @@ def load_config(path: Path) -> dict[str, Any]:
                     raise ValueError(
                         f"probe.flowblock_proxy.{key} must be in [0, 1]"
                     )
+    mean_field_baseline = config.get("mean_field_baseline", {})
+    if mean_field_baseline:
+        if int(mean_field_baseline.get("block_size", 32)) <= 0:
+            raise ValueError("mean_field_baseline.block_size must be positive")
+        threshold = float(mean_field_baseline.get("threshold", 0.9))
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("mean_field_baseline.threshold must be in [0, 1]")
+        if int(mean_field_baseline.get("iterations", 2)) <= 0:
+            raise ValueError("mean_field_baseline.iterations must be positive")
+        if int(mean_field_baseline.get("pair_chunk_size", 16)) <= 0:
+            raise ValueError(
+                "mean_field_baseline.pair_chunk_size must be positive"
+            )
     return config
