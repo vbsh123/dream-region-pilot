@@ -24,6 +24,8 @@ class RegionScheduler:
             "always_on",
             "fixed_lag",
             "wavefront_probe",
+            "flowblock_proxy",
+            "controlled_position",
             "controlled_dapd",
             "controlled_jsd",
             "controlled_combo",
@@ -52,6 +54,8 @@ class RegionScheduler:
     def is_wavefront(self) -> bool:
         return self.mode in {
             "wavefront_probe",
+            "flowblock_proxy",
+            "controlled_position",
             "controlled_dapd",
             "controlled_jsd",
             "controlled_combo",
@@ -208,6 +212,8 @@ def parse_strategy(name: str) -> tuple[str, int]:
         "fixed_sequential",
         "always_on",
         "wavefront_probe",
+        "flowblock_proxy",
+        "controlled_position",
         "controlled_dapd",
         "controlled_jsd",
         "controlled_combo",

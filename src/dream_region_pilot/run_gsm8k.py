@@ -159,6 +159,8 @@ def main() -> None:
         "async_lag2",
         "async_lag4",
         "wavefront_probe",
+        "flowblock_proxy",
+        "controlled_position",
         "controlled_dapd",
         "controlled_jsd",
         "controlled_combo",
@@ -220,6 +222,7 @@ def main() -> None:
                 if example_index < diagnostics_count and (
                     strategy.startswith("async_")
                     or strategy == "wavefront_probe"
+                    or strategy == "flowblock_proxy"
                     or strategy.startswith("controlled_")
                 ):
                     diagnostics_dir = (
@@ -281,11 +284,13 @@ def main() -> None:
             "Backpressure clocks count non-empty commitment events; a separate schedule cursor consumes zero-transfer Dream schedule points.",
             "Completed parents release children because strict positive lag otherwise deadlocks terminal child steps.",
             "wavefront_probe admits at most one positional region per forward, uses W as a maximum active-region count, and uses a FlowBlock-style confidence acceptance ratio only for admission.",
+            "flowblock_proxy transfers only W=2, theta_spawn=0.60, and token-readiness probability 0.50 into the Dream regional admission harness; it is not an implementation of FlowBlock's T2T editing, block-causal KV cache, or threshold commit policy.",
             "The 15% spawn threshold is theta_spawn; the separate token confidence threshold defaults to 0.5, matching FlowBlock's reported math setting but not Dream's entropy commit rule.",
             "Mean-Field JSD is diagnostic-only in wavefront_probe; controlled_jsd and controlled_combo use its persistent region edges for pausing decisions but never change admission or token scoring.",
             "The all-canvas Mean-Field signal uses a top-k-union plus shared-tail approximation; retained probability mass is logged and paper_exact is false unless top-k equals the vocabulary size.",
             "Controlled modes activate an edge only after both endpoints reveal a token and the edge persists for two graph observations.",
             "Controlled modes normally advance every unblocked admitted region; they do not round-robin or graph-color components.",
+            "controlled_position uses the identical admission and bounded-skew controller without dynamic DAPD/JSD edges, isolating whether graph control helps beyond positional staggering.",
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses a zero-shot chat prompt requesting a #### numeric answer; this is not claimed to reproduce DAPD paper evaluation prompting.",

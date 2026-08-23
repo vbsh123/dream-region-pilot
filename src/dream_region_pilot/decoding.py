@@ -116,6 +116,10 @@ def decode_vanilla(
     response = sequences[0, prompt.shape[1] :]
     text, effective_tokens = decode_response(tokenizer, response)
     canvas_tokens = int(response.numel())
+    canvas_tokens_per_second = canvas_tokens / elapsed if elapsed > 0 else None
+    effective_tokens_per_second = (
+        effective_tokens / elapsed if elapsed > 0 else None
+    )
     return {
         "generation": text,
         "response_token_ids": [int(value) for value in response.detach().cpu().tolist()],
@@ -125,9 +129,14 @@ def decode_vanilla(
         "canvas_tokens": canvas_tokens,
         "effective_generated_tokens": effective_tokens,
         "wall_clock_seconds": elapsed,
+        "canvas_tokens_per_second": canvas_tokens_per_second,
+        "effective_tokens_per_second": effective_tokens_per_second,
+        "forward_passes_per_second": nfe / elapsed if elapsed > 0 else None,
         "dependency_recomputations": 0,
         "dependency_seconds": 0.0,
         "mean_field_seconds": 0.0,
+        "dependency_signal_seconds": 0.0,
+        "diagnostic_seconds_excluded_from_wall_clock": 0.0,
         "schedule_approximation": False,
     }
 
@@ -160,15 +169,32 @@ def decode_regional(
     regions = build_fixed_regions(generation_length, region_size)
     refresh_remaining_masks(regions, [True] * generation_length)
     probe = probe or {}
+    strategy_probe = probe
+    if mode == "flowblock_proxy":
+        flowblock_proxy = probe.get("flowblock_proxy", {})
+        strategy_probe = {
+            **probe,
+            "max_active_regions": int(
+                flowblock_proxy.get("max_active_regions", 2)
+            ),
+            "spawn_readiness": float(
+                flowblock_proxy.get("spawn_readiness", 0.60)
+            ),
+            "readiness_confidence_threshold": float(
+                flowblock_proxy.get("readiness_confidence_threshold", 0.50)
+            ),
+        }
     scheduler = RegionScheduler(
         regions,
         mode=mode,
         lag=lag,
         release_completed_parents=release_completed_parents,
-        max_active_regions=int(probe.get("max_active_regions", len(regions))),
-        spawn_readiness=float(probe.get("spawn_readiness", 0.15)),
-        max_progress_gap=int(probe.get("max_progress_gap", 8)),
-        edge_persistence=int(probe.get("edge_persistence", 2)),
+        max_active_regions=int(
+            strategy_probe.get("max_active_regions", len(regions))
+        ),
+        spawn_readiness=float(strategy_probe.get("spawn_readiness", 0.15)),
+        max_progress_gap=int(strategy_probe.get("max_progress_gap", 8)),
+        edge_persistence=int(strategy_probe.get("edge_persistence", 2)),
     )
     diagnostics = (
         ExampleDiagnostics(diagnostics_dir, diagnostic_snapshot_interval)
@@ -179,14 +205,35 @@ def decode_regional(
     recompute_interval = int(dependency["recompute_interval"])
     if recompute_interval <= 0:
         raise ValueError("dependency.recompute_interval must be positive")
-    controlled_modes = {"controlled_dapd", "controlled_jsd", "controlled_combo"}
-    use_graph = mode in {"fixed_lag", "wavefront_probe"} | controlled_modes
+    graph_controlled_modes = {
+        "controlled_dapd",
+        "controlled_jsd",
+        "controlled_combo",
+    }
+    use_graph = mode in {"fixed_lag", "wavefront_probe"} | graph_controlled_modes
+    needs_dapd = mode in {
+        "fixed_lag",
+        "wavefront_probe",
+        "controlled_dapd",
+        "controlled_combo",
+    }
     mean_field_config = probe.get("mean_field", {})
     use_mean_field = mode in {
         "wavefront_probe",
         "controlled_jsd",
         "controlled_combo",
     } and bool(mean_field_config.get("enabled", False))
+    mean_field_thresholds = [
+        float(value)
+        for value in mean_field_config.get(
+            "thresholds", [0.5, 0.7, 0.8, 0.9, 0.95]
+        )
+    ]
+    combination_threshold = float(
+        mean_field_config.get("combination_threshold", 0.9)
+    )
+    if use_mean_field and combination_threshold not in mean_field_thresholds:
+        mean_field_thresholds.append(combination_threshold)
     latest_snapshot = None
     nfe = 0
     dependency_recomputations = 0
@@ -207,19 +254,35 @@ def decode_regional(
             latest_snapshot is None or nfe % recompute_interval == 0
         )
         if should_recompute:
-            synchronize(device)
-            dependency_started = time.perf_counter()
-            logits, raw_token, normalized_token = adapter.forward_with_dependencies(
-                model,
-                tokens,
-                response_mask,
-                prompt_length,
-            )
-            synchronize(device)
-            dependency_seconds += time.perf_counter() - dependency_started
+            if needs_dapd:
+                synchronize(device)
+                dependency_started = time.perf_counter()
+                logits, raw_token, normalized_token = (
+                    adapter.forward_with_dependencies(
+                        model,
+                        tokens,
+                        response_mask,
+                        prompt_length,
+                    )
+                )
+                synchronize(device)
+                dependency_seconds += time.perf_counter() - dependency_started
+            else:
+                # JSD uses the ordinary logits from this forward and does not
+                # need DAPD's Q/K capture or attention reconstruction.
+                logits = adapter.forward_logits(model, tokens)
+                synchronize(device)
+                raw_token = torch.zeros(
+                    (generation_length, generation_length),
+                    dtype=torch.float32,
+                    device=device,
+                )
+                normalized_token = raw_token.clone()
             dependency_recomputations += 1
             additional_dependencies = None
-            dependency_metadata: dict[str, Any] = {}
+            dependency_metadata: dict[str, Any] = {
+                "dapd_computed": needs_dapd,
+            }
             if use_mean_field:
                 mean_field_started = time.perf_counter()
                 (
@@ -252,14 +315,7 @@ def decode_regional(
                 threshold=float(dependency["threshold"]),
                 additional_token_dependencies=additional_dependencies,
                 additional_thresholds=(
-                    {
-                        "mean_field": [
-                            float(value)
-                            for value in mean_field_config.get(
-                                "thresholds", [0.5, 0.7, 0.8, 0.9, 0.95]
-                            )
-                        ]
-                    }
+                    {"mean_field": mean_field_thresholds}
                     if use_mean_field
                     else None
                 ),
@@ -269,24 +325,26 @@ def decode_regional(
                     else None
                 ),
                 combination_threshold=(
-                    float(mean_field_config.get("combination_threshold", 0.9))
-                    if use_mean_field
+                    combination_threshold
+                    if use_mean_field and needs_dapd
                     else None
                 ),
                 metadata=dependency_metadata,
             )
+            primary_graph_key = "dapd"
             if mode == "fixed_lag":
                 scheduler.set_parents(latest_snapshot.parents)
-            elif mode in controlled_modes:
+            elif mode in graph_controlled_modes:
                 graph_key = {
                     "controlled_dapd": "dapd",
                     "controlled_jsd": (
-                        f"mean_field_t{float(mean_field_config.get('combination_threshold', 0.9)):.2f}"
+                        f"mean_field_t{combination_threshold:.2f}"
                     ),
                     "controlled_combo": (
-                        f"combined_intersection_t{float(mean_field_config.get('combination_threshold', 0.9)):.2f}"
+                        f"combined_intersection_t{combination_threshold:.2f}"
                     ),
                 }[mode]
+                primary_graph_key = graph_key
                 if graph_key not in latest_snapshot.signal_graphs:
                     raise RuntimeError(
                         f"Required dependency graph {graph_key!r} was not constructed"
@@ -297,7 +355,11 @@ def decode_regional(
             graph_summaries.append(
                 {
                     "iteration": nfe,
-                    **graph_summary(latest_snapshot),
+                    "primary_signal": primary_graph_key,
+                    **graph_summary(
+                        latest_snapshot,
+                        latest_snapshot.signal_graphs[primary_graph_key],
+                    ),
                     "signals": {
                         name: {
                             "threshold": signal_graph.threshold,
@@ -322,7 +384,7 @@ def decode_regional(
                 prompt_length=prompt_length,
                 regions=regions,
                 confidence_threshold=float(
-                    probe.get("readiness_confidence_threshold", 0.5)
+                    strategy_probe.get("readiness_confidence_threshold", 0.5)
                 ),
             )
             if scheduler.is_wavefront
@@ -412,6 +474,7 @@ def decode_regional(
     response = tokens[0, prompt_length:]
     text, effective_tokens = decode_response(tokenizer, response)
     canvas_tokens = int(response.numel())
+    wall_clock_seconds = elapsed_including_diagnostics - diagnostic_seconds
     return {
         "generation": text,
         "response_token_ids": [int(value) for value in response.detach().cpu().tolist()],
@@ -423,7 +486,18 @@ def decode_regional(
         "tokens_committed_per_forward": tokens_committed_per_forward,
         "canvas_tokens": canvas_tokens,
         "effective_generated_tokens": effective_tokens,
-        "wall_clock_seconds": elapsed_including_diagnostics - diagnostic_seconds,
+        "wall_clock_seconds": wall_clock_seconds,
+        "canvas_tokens_per_second": (
+            canvas_tokens / wall_clock_seconds if wall_clock_seconds > 0 else None
+        ),
+        "effective_tokens_per_second": (
+            effective_tokens / wall_clock_seconds
+            if wall_clock_seconds > 0
+            else None
+        ),
+        "forward_passes_per_second": (
+            nfe / wall_clock_seconds if wall_clock_seconds > 0 else None
+        ),
         "diagnostic_seconds_excluded_from_wall_clock": diagnostic_seconds,
         "dependency_recomputations": dependency_recomputations,
         "dependency_seconds": dependency_seconds,
@@ -442,6 +516,11 @@ def decode_regional(
         },
         "admission_events": admission_events,
         "final_admitted_region_count": scheduler.admitted_count,
+        "max_active_regions": scheduler.max_active_regions,
+        "spawn_readiness": scheduler.spawn_readiness,
+        "readiness_confidence_threshold": float(
+            strategy_probe.get("readiness_confidence_threshold", 0.5)
+        ),
         "control_timeline": control_timeline,
         "iterations_with_blocking": sum(
             bool(item["blocked_regions"]) for item in control_timeline
@@ -463,12 +542,20 @@ def decode_regional(
             "per_region_linear_time_with_completed_parent_release"
             if mode == "fixed_lag" and release_completed_parents
             else (
-                "flowblock_style_confidence_admission_plus_per_region_linear_time"
-                if mode == "wavefront_probe"
+                "flowblock_admission_proxy_plus_per_region_linear_time"
+                if mode == "flowblock_proxy"
                 else (
-                    "persistent_dependency_bounded_progress_skew"
-                    if mode in controlled_modes
-                    else "per_region_linear_time"
+                    "loose_confidence_admission_plus_per_region_linear_time"
+                    if mode == "wavefront_probe"
+                    else (
+                        "persistent_dependency_bounded_progress_skew"
+                        if mode in graph_controlled_modes
+                        else (
+                            "positional_bounded_progress_skew"
+                            if mode == "controlled_position"
+                            else "per_region_linear_time"
+                        )
+                    )
                 )
             )
         ),

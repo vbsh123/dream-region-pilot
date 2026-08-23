@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 source .venv/bin/activate
 
-OUTPUT_DIR="${1:-outputs/gsm8k_controlled_scheduler_probe_2}"
+OUTPUT_DIR="${1:-outputs/gsm8k_controlled_comparison_probe_2}"
 shift || true
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
@@ -14,7 +14,9 @@ python -m dream_region_pilot.run_gsm8k \
   --output-dir "$OUTPUT_DIR" \
   --limit 2 \
   --strategies \
-    wavefront_probe \
+    vanilla \
+    flowblock_proxy \
+    controlled_position \
     controlled_dapd \
     controlled_jsd \
     controlled_combo \

@@ -26,6 +26,14 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for strategy in strategies:
         selected = [row for row in rows if row["strategy"] == strategy]
         count = len(selected)
+        total_nfe = sum(int(row["nfe"]) for row in selected)
+        total_canvas_tokens = sum(int(row["canvas_tokens"]) for row in selected)
+        total_effective_tokens = sum(
+            int(row["effective_generated_tokens"]) for row in selected
+        )
+        total_wall_clock = sum(
+            float(row["wall_clock_seconds"]) for row in selected
+        )
         densities = [
             float(row["mean_graph_edge_density"])
             for row in selected
@@ -42,26 +50,30 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "examples": count,
                 "task_accuracy": sum(bool(row["correct"]) for row in selected) / count,
                 "mean_nfe": sum(int(row["nfe"]) for row in selected) / count,
-                "total_nfe": sum(int(row["nfe"]) for row in selected),
-                "mean_tokens_committed_per_forward": sum(
-                    float(row["average_tokens_committed_per_forward"])
-                    for row in selected
-                )
-                / count,
-                "total_canvas_tokens": sum(int(row["canvas_tokens"]) for row in selected),
-                "total_effective_generated_tokens": sum(
-                    int(row["effective_generated_tokens"]) for row in selected
+                "total_nfe": total_nfe,
+                "mean_tokens_committed_per_forward": (
+                    total_canvas_tokens / total_nfe if total_nfe > 0 else None
                 ),
-                "total_generated_tokens": sum(
-                    int(row["effective_generated_tokens"]) for row in selected
+                "total_canvas_tokens": total_canvas_tokens,
+                "total_effective_generated_tokens": total_effective_tokens,
+                "total_generated_tokens": total_effective_tokens,
+                "total_wall_clock_seconds": total_wall_clock,
+                "mean_wall_clock_seconds": total_wall_clock / count,
+                "canvas_tokens_per_second": (
+                    total_canvas_tokens / total_wall_clock
+                    if total_wall_clock > 0
+                    else None
                 ),
-                "total_wall_clock_seconds": sum(
-                    float(row["wall_clock_seconds"]) for row in selected
+                "effective_tokens_per_second": (
+                    total_effective_tokens / total_wall_clock
+                    if total_wall_clock > 0
+                    else None
                 ),
-                "mean_wall_clock_seconds": sum(
-                    float(row["wall_clock_seconds"]) for row in selected
-                )
-                / count,
+                "forward_passes_per_second": (
+                    total_nfe / total_wall_clock
+                    if total_wall_clock > 0
+                    else None
+                ),
                 "mean_dependency_seconds": sum(
                     float(row["dependency_seconds"]) for row in selected
                 )
@@ -111,6 +123,28 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     else None
                 ),
             }
+        )
+    vanilla = next(
+        (item for item in result if item["strategy"] == "vanilla"), None
+    )
+    for item in result:
+        item["nfe_speedup_vs_vanilla"] = (
+            vanilla["mean_nfe"] / item["mean_nfe"]
+            if vanilla is not None and item["mean_nfe"] > 0
+            else None
+        )
+        item["wall_clock_speedup_vs_vanilla"] = (
+            vanilla["mean_wall_clock_seconds"] / item["mean_wall_clock_seconds"]
+            if vanilla is not None and item["mean_wall_clock_seconds"] > 0
+            else None
+        )
+        item["canvas_tps_speedup_vs_vanilla"] = (
+            item["canvas_tokens_per_second"]
+            / vanilla["canvas_tokens_per_second"]
+            if vanilla is not None
+            and item["canvas_tokens_per_second"] is not None
+            and vanilla["canvas_tokens_per_second"]
+            else None
         )
     return result
 

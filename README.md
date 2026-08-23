@@ -94,13 +94,15 @@ After inspecting the dynamic graphs, run the first scheduling comparison:
 ```bash
 cd /workspace/dream-region-pilot
 bash scripts/run_controlled_scheduler_probe.sh \
-  outputs/gsm8k_controlled_scheduler_probe_2
+  outputs/gsm8k_controlled_comparison_probe_2
 ```
 
 This runs the same two examples under:
 
 ```text
-wavefront_probe       W=8 and 15% readiness, no dependency control
+vanilla               official Dream decoder
+flowblock_proxy       W=2 and 60% readiness admission proxy
+controlled_position   W=8 positional bounded skew, no dynamic graph
 controlled_dapd       persistent DAPD edges
 controlled_jsd        persistent Mean-Field/JSD mean edges
 controlled_combo      persistent DAPD ∩ JSD edges
@@ -121,6 +123,36 @@ positional neighbors provide the initial loose pipeline once admitted.
 Inspect each strategy's `region_state.csv`: `progress_tokens`, `blocked`, and
 `urgent` expose every control decision. The result row also contains the full
 `control_timeline` and final persistent edge set.
+
+The aggressive `wavefront_probe` is a diagnostic ablation, not the speed or
+accuracy baseline for the 50-example run. Its two-example result is useful for
+showing that a 15% gate can fail, but it should not be presented as FlowBlock.
+
+## Current 50-example comparison
+
+The headline pilot now compares:
+
+```text
+vanilla                 official Dream diffusion_generate
+flowblock_proxy         W=2, theta_spawn=0.60, token readiness p>=0.50
+controlled_position     W=8, theta_spawn=0.15, positional bounded skew only
+controlled_dapd         position control plus persistent DAPD edges
+controlled_jsd          position control plus persistent Mean-Field/JSD edges
+controlled_combo        position control plus persistent DAPD intersection JSD
+```
+
+`flowblock_proxy` is deliberately named a proxy. It transfers FlowBlock's
+admission settings into this fixed-region Dream harness, but retains Dream's
+full attention visibility, entropy commit rule, and full-canvas forwards. It
+does not implement FlowBlock's T2T editing, block-causal KV cache, or threshold
+commit policy. It is the fair readiness-gate comparison available inside this
+pilot, not a reproduction of official FlowBlock throughput.
+
+`controlled_position` is essential attribution control: it uses exactly the
+same W=8 admission and actual-token-progress bounded-skew scheduler as the
+dependency modes but never extracts or activates dynamic graph edges. A
+dependency strategy must improve on this row—not merely on the aggressive
+wavefront—to support the graph hypothesis.
 
 ## Vast setup
 
@@ -177,19 +209,19 @@ probe before choosing the threshold or launching the full sweep.
 
 ```bash
 cd /workspace/dream-region-pilot
-bash scripts/run_gsm8k_50.sh outputs/gsm8k_50_r32
+bash scripts/run_gsm8k_50.sh outputs/gsm8k_controlled_50_r32
 ```
 
-The default strategy set is:
+The strategy set is:
 
 ```text
-vanilla fixed_sequential always_on async_lag0 async_lag1 async_lag2 async_lag4
+vanilla flowblock_proxy controlled_position controlled_dapd controlled_jsd controlled_combo
 ```
 
 Resume an interrupted run with:
 
 ```bash
-bash scripts/run_gsm8k_50.sh outputs/gsm8k_50_r32 --resume
+bash scripts/run_gsm8k_50.sh outputs/gsm8k_controlled_50_r32 --resume
 ```
 
 To test another supported fixed region size, copy the YAML and change
@@ -213,8 +245,10 @@ aggregators), `--dependency-matrix`, `--dependency-threshold`,
 ## Outputs
 
 - `results.jsonl`: accuracy inputs plus per-example NFE, commitment, token,
-  timing, dependency-cost, clock, and graph-density measurements.
-- `summary.csv` and `summary.json`: accuracy-vs-NFE comparison for every mode.
+  timing, canvas/effective TPS, dependency-cost, clock, and graph-density
+  measurements.
+- `summary.csv` and `summary.json`: accuracy, NFE, aggregate canvas/effective
+  TPS, wall time, and vanilla-relative NFE/wall/TPS speedups for every mode.
 - `metadata.json`: resolved model commit when exposed by Transformers, pinned
   DAPD revision, complete config, and interpretation notes.
 - `diagnostics/example_*/async_lag*/`: full raw/normalized token dependency
@@ -224,3 +258,11 @@ aggregators), `--dependency-matrix`, `--dependency-threshold`,
 
 No result table is checked into the repository because the requested local
 workflow explicitly forbids running the experiment here.
+
+NFE remains useful because all strategies still run the same 256-token Dream
+canvas: fewer forwards means less core model work. It is not treated as the
+only speed result. End-to-end decoding wall time includes required DAPD/JSD
+computation, and the decisive throughput columns are `canvas_tokens_per_second`
+and `effective_tokens_per_second`. Diagnostic serialization/plotting is timed
+separately and excluded. Strategy order rotates by example to reduce systematic
+warm-cache and thermal bias.

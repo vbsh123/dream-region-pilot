@@ -192,7 +192,31 @@ after both endpoints have nonzero revealed-token progress and two consecutive
 observations; two consecutive misses remove it. Immediate positional-neighbor
 edges supply the initial pipeline. The comparison holds this scheduler fixed
 and varies only the dynamic graph source: DAPD, Mean-Field/JSD mean, or their
-intersection. The readiness-only wavefront remains the required control.
+intersection. The loose readiness-only wavefront remains a diagnostic; the
+50-example attribution control is the position-only bounded-skew strategy
+described below.
+
+For the 50-example evaluation, that loose wavefront is replaced as the
+competitive admission comparison by `flowblock_proxy`: at most two unfinished
+regions (`W=2`), a frontier readiness threshold of `0.60`, and per-token
+readiness at maximum probability `0.50`. This is not official FlowBlock: the
+proxy cannot reproduce its T2T editing, block-causal KV cache, or commit rule
+without changing the model/sampler beyond this pilot. The exact settings and
+the approximation name are written into every result row and metadata file.
+
+The evaluation also includes `controlled_position`, which removes all dynamic
+dependencies while holding the W=8, 15% admission gate, and positional
+bounded-skew controller fixed. This was added to prevent a scheduler-only gain
+from being attributed to DAPD or JSD. `controlled_jsd` uses a plain Dream
+forward at graph observations and therefore does not pay the DAPD Q/K hook
+cost; `controlled_combo` necessarily computes both signals.
+
+Reported speed has three views. NFE measures full-canvas model calls; canvas
+TPS divides the fixed 256-token canvas by measured decoding time; effective
+TPS counts only tokens before EOS/EOT. Required dependency computation is in
+decoding wall time. Diagnostic file and plot creation is separately measured
+and excluded. The summary reports vanilla-relative NFE, wall-clock, and canvas
+TPS speedups rather than inferring throughput from NFE alone.
 
 ## Mathematical limitation
 

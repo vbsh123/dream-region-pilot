@@ -49,6 +49,12 @@ probe:
   readiness_confidence_threshold: 0.50
   max_progress_gap: 8
   edge_persistence: 2
+  # Cross-model admission proxy only: W=2 and theta_spawn=0.60. It retains
+  # Dream's full visibility and entropy commit rule, so it is not FlowBlock.
+  flowblock_proxy:
+    max_active_regions: 2
+    spawn_readiness: 0.60
+    readiness_confidence_threshold: 0.50
   mean_field:
     enabled: true
     # The paper is exact over vocabulary but uses a small (20-token) active
@@ -61,12 +67,11 @@ probe:
 experiment:
   strategies:
     - vanilla
-    - fixed_sequential
-    - always_on
-    - async_lag0
-    - async_lag1
-    - async_lag2
-    - async_lag4
+    - flowblock_proxy
+    - controlled_position
+    - controlled_dapd
+    - controlled_jsd
+    - controlled_combo
   rotate_strategy_order: true
   diagnostic_examples: 3
   diagnostic_snapshot_interval: 4
