@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dream-region-pilot"
+version = "0.1.0"
+description = "Minimal training-free regional asynchronous decoding pilot for Dream"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "accelerate==1.4.0",
+  "datasets==3.3.2",
+  "huggingface-hub==0.34.5",
+  "matplotlib==3.10.6",
+  "numpy==2.1.2",
+  "protobuf==6.31.1",
+  "pyyaml==6.0.2",
+  "safetensors==0.5.3",
+  "sentencepiece==0.2.1",
+  "tokenizers==0.21.4",
+  "torch==2.5.1",
+  "tqdm==4.67.1",
+  "transformers==4.48.1",
+]
+
+[project.scripts]
+dream-region-pilot = "dream_region_pilot.run_gsm8k:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
