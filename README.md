@@ -9,6 +9,33 @@ environment setup, test, build, or experiment was executed on this PC.
 
 ## Expanded baseline and dataset probe
 
+### First priority: global Dream step sweep
+
+Before interpreting any regional speedup, compare against the same official
+Dream decoder with fewer global denoising steps. The 256-token canvas, prompt,
+seed, entropy policy, and attention visibility remain unchanged; only `steps`
+varies. In particular, `vanilla_steps72` is compute-matched to the earlier
+regional mean of roughly 71 NFEs.
+
+Run the two-example smoke test on Vast:
+
+```bash
+bash scripts/run_vanilla_step_sweep.sh \
+  outputs/gsm8k_vanilla_step_sweep_2 2
+```
+
+Then run 50 examples:
+
+```bash
+bash scripts/run_vanilla_step_sweep.sh \
+  outputs/gsm8k_vanilla_step_sweep_50 50
+```
+
+The sweep is `256, 128, 96, 72, 64, 32`. A regional method supports the
+hypothesis only if it improves the accuracy/NFE or accuracy/wall-time frontier
+over this global sweep. `vanilla_steps32` versus `always_on` will later isolate
+global confidence allocation from equal per-region reveal budgets.
+
 The next run separates the result we actually need to explain:
 
 ```text

@@ -124,6 +124,7 @@ def decode_vanilla(
         "generation": text,
         "response_token_ids": [int(value) for value in response.detach().cpu().tolist()],
         "nfe": nfe,
+        "configured_steps": int(generation["steps"]),
         "global_forward_passes": nfe,
         "average_tokens_committed_per_forward": canvas_tokens / nfe,
         "canvas_tokens": canvas_tokens,

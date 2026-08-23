@@ -179,6 +179,13 @@ These are not claims from DAPD or Dream:
     executing model-generated programs. MATH-500 uses FlowBlock's pinned
     `math-verify==0.9.0`; code benchmarks remain deferred because their
     evaluators execute untrusted generated Python.
+25. **A reduced-step global Dream sweep is required before scheduler claims.**
+    The original vanilla row used 256 steps, while concurrent 32-step region
+    schedules completed in roughly 71 global forwards. The new vanilla sweep
+    holds the 256-token canvas and commit policy fixed and tests 128, 96, 72,
+    64, and 32 global steps. The 72-step row is the primary compute-matched
+    control; regional scheduling is useful only if it lies above this global
+    accuracy/compute frontier.
 
 ## Decision rule after the dynamic graph probe
 

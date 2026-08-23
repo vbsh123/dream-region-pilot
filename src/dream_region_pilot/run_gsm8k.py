@@ -17,6 +17,16 @@ from .dependencies import DAPDDreamAdapter
 from .evaluation import write_summary
 
 
+VANILLA_STEP_OVERRIDES = {
+    "vanilla": None,
+    "vanilla_steps128": 128,
+    "vanilla_steps96": 96,
+    "vanilla_steps72": 72,
+    "vanilla_steps64": 64,
+    "vanilla_steps32": 32,
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Dream fixed-region pilot")
     parser.add_argument("--config", required=True, type=Path)
@@ -143,8 +153,7 @@ def main() -> None:
             args.mean_field_combination_threshold
         )
     strategies = args.strategies or list(config["experiment"]["strategies"])
-    allowed = {
-        "vanilla",
+    allowed = set(VANILLA_STEP_OVERRIDES) | {
         "fixed_sequential",
         "always_on",
         "async_lag0",
@@ -229,9 +238,13 @@ def main() -> None:
                         / f"example_{example_index:03d}"
                         / strategy
                     )
-                if strategy == "vanilla":
+                if strategy in VANILLA_STEP_OVERRIDES:
+                    vanilla_generation = dict(config["generation"])
+                    step_override = VANILLA_STEP_OVERRIDES[strategy]
+                    if step_override is not None:
+                        vanilla_generation["steps"] = step_override
                     generated = decode_vanilla(
-                        model, tokenizer, prompt, config["generation"]
+                        model, tokenizer, prompt, vanilla_generation
                     )
                 elif strategy == "mean_field_repro":
                     generated = decode_mean_field_repro(
@@ -300,6 +313,8 @@ def main() -> None:
             "The 15% spawn threshold is theta_spawn; the separate token confidence threshold defaults to 0.5, matching FlowBlock's reported math setting but not Dream's entropy commit rule.",
             "Mean-Field JSD is diagnostic-only in wavefront_probe; controlled_jsd and controlled_combo use its persistent region edges for pausing decisions but never change admission or token scoring.",
             "loose_wavefront is the graph-free W=8, theta_spawn=0.15 readiness-only ablation; unlike controlled_position it has no permanent positional bounded-skew edges.",
+            "vanilla_steps32/64/72/96/128 call the official Dream diffusion_generate path with only the configured global step count changed; max_new_tokens remains 256.",
+            "vanilla_steps72 is the primary compute-matched control for regional strategies that previously averaged about 71 NFEs.",
             "mean_field_repro implements Algorithm 1 from arXiv:2606.15805 with exact JSD inside sequential active blocks. The paper's linked GitHub repository currently returns 404, so this is not labelled official code.",
             "The Mean-Field pseudocode does not define an empty-commit fallback. This reproduction commits the maximum-intensity token to guarantee progress and logs every such event.",
             "The all-canvas Mean-Field signal uses a top-k-union plus shared-tail approximation; retained probability mass is logged and paper_exact is false unless top-k equals the vocabulary size.",
