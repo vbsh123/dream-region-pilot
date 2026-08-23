@@ -167,6 +167,8 @@ def decode_regional(
         release_completed_parents=release_completed_parents,
         max_active_regions=int(probe.get("max_active_regions", len(regions))),
         spawn_readiness=float(probe.get("spawn_readiness", 0.15)),
+        max_progress_gap=int(probe.get("max_progress_gap", 8)),
+        edge_persistence=int(probe.get("edge_persistence", 2)),
     )
     diagnostics = (
         ExampleDiagnostics(diagnostics_dir, diagnostic_snapshot_interval)
@@ -177,11 +179,14 @@ def decode_regional(
     recompute_interval = int(dependency["recompute_interval"])
     if recompute_interval <= 0:
         raise ValueError("dependency.recompute_interval must be positive")
-    use_graph = mode in {"fixed_lag", "wavefront_probe"}
+    controlled_modes = {"controlled_dapd", "controlled_jsd", "controlled_combo"}
+    use_graph = mode in {"fixed_lag", "wavefront_probe"} | controlled_modes
     mean_field_config = probe.get("mean_field", {})
-    use_mean_field = mode == "wavefront_probe" and bool(
-        mean_field_config.get("enabled", False)
-    )
+    use_mean_field = mode in {
+        "wavefront_probe",
+        "controlled_jsd",
+        "controlled_combo",
+    } and bool(mean_field_config.get("enabled", False))
     latest_snapshot = None
     nfe = 0
     dependency_recomputations = 0
@@ -191,6 +196,7 @@ def decode_regional(
     graph_summaries: list[dict[str, Any]] = []
     tokens_committed_per_forward: list[int] = []
     admission_events: list[dict[str, Any]] = []
+    control_timeline: list[dict[str, Any]] = []
 
     synchronize(device)
     started = time.perf_counter()
@@ -257,6 +263,11 @@ def decode_regional(
                     if use_mean_field
                     else None
                 ),
+                additional_aggregators=(
+                    {"mean_field": "mean", "mean_field_raw": "mean"}
+                    if use_mean_field
+                    else None
+                ),
                 combination_threshold=(
                     float(mean_field_config.get("combination_threshold", 0.9))
                     if use_mean_field
@@ -266,6 +277,23 @@ def decode_regional(
             )
             if mode == "fixed_lag":
                 scheduler.set_parents(latest_snapshot.parents)
+            elif mode in controlled_modes:
+                graph_key = {
+                    "controlled_dapd": "dapd",
+                    "controlled_jsd": (
+                        f"mean_field_t{float(mean_field_config.get('combination_threshold', 0.9)):.2f}"
+                    ),
+                    "controlled_combo": (
+                        f"combined_intersection_t{float(mean_field_config.get('combination_threshold', 0.9)):.2f}"
+                    ),
+                }[mode]
+                if graph_key not in latest_snapshot.signal_graphs:
+                    raise RuntimeError(
+                        f"Required dependency graph {graph_key!r} was not constructed"
+                    )
+                scheduler.observe_dependency_edges(
+                    latest_snapshot.signal_graphs[graph_key].edges
+                )
             graph_summaries.append(
                 {
                     "iteration": nfe,
@@ -297,7 +325,7 @@ def decode_regional(
                     probe.get("readiness_confidence_threshold", 0.5)
                 ),
             )
-            if mode == "wavefront_probe"
+            if scheduler.is_wavefront
             else {}
         )
 
@@ -341,6 +369,22 @@ def decode_regional(
                     ),
                 }
             )
+        control_state = {
+            "iteration": nfe,
+            "progress_tokens": {
+                region.index: scheduler.revealed_tokens(region) for region in regions
+            },
+            "active_dependency_edges": [
+                list(pair) for pair in sorted(scheduler.active_dependency_edges)
+            ],
+            "control_edges": [
+                list(pair) for pair in sorted(scheduler.last_control_edges)
+            ],
+            "blocked_regions": sorted(scheduler.last_blocked_regions),
+            "urgent_regions": sorted(scheduler.last_urgent_regions),
+        }
+        if scheduler.is_controlled:
+            control_timeline.append(control_state)
         if diagnostics is not None:
             diagnostic_started = time.perf_counter()
             diagnostics.record_iteration(
@@ -353,6 +397,7 @@ def decode_regional(
                 admitted_region_count=scheduler.admitted_count,
                 newly_admitted=newly_admitted,
                 readiness_by_region=readiness_by_region,
+                control_state=control_state,
             )
             diagnostic_seconds += time.perf_counter() - diagnostic_started
         if nfe > maximum_iterations:
@@ -397,6 +442,22 @@ def decode_regional(
         },
         "admission_events": admission_events,
         "final_admitted_region_count": scheduler.admitted_count,
+        "control_timeline": control_timeline,
+        "iterations_with_blocking": sum(
+            bool(item["blocked_regions"]) for item in control_timeline
+        ),
+        "blocked_region_events": sum(
+            len(item["blocked_regions"]) for item in control_timeline
+        ),
+        "mean_active_dependency_edge_count": (
+            sum(len(item["active_dependency_edges"]) for item in control_timeline)
+            / len(control_timeline)
+            if control_timeline
+            else 0.0
+        ),
+        "final_active_dependency_edges": [
+            list(pair) for pair in sorted(scheduler.active_dependency_edges)
+        ],
         "schedule_approximation": True,
         "schedule_approximation_name": (
             "per_region_linear_time_with_completed_parent_release"
@@ -404,7 +465,11 @@ def decode_regional(
             else (
                 "flowblock_style_confidence_admission_plus_per_region_linear_time"
                 if mode == "wavefront_probe"
-                else "per_region_linear_time"
+                else (
+                    "persistent_dependency_bounded_progress_skew"
+                    if mode in controlled_modes
+                    else "per_region_linear_time"
+                )
             )
         ),
     }

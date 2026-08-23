@@ -70,6 +70,19 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     float(row.get("mean_field_seconds", 0.0)) for row in selected
                 )
                 / count,
+                "mean_iterations_with_blocking": sum(
+                    int(row.get("iterations_with_blocking", 0)) for row in selected
+                )
+                / count,
+                "mean_blocked_region_events": sum(
+                    int(row.get("blocked_region_events", 0)) for row in selected
+                )
+                / count,
+                "mean_active_dependency_edge_count": sum(
+                    float(row.get("mean_active_dependency_edge_count", 0.0))
+                    for row in selected
+                )
+                / count,
                 "mean_graph_edge_density": (
                     sum(densities) / len(densities) if densities else None
                 ),

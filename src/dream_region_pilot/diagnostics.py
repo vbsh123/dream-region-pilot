@@ -131,7 +131,7 @@ class ExampleDiagnostics:
             and not name.startswith("mean_field_raw_")
         ]
         preferred_key = next(
-            (name for name in mean_field_keys if name.endswith("_topk_percent")),
+            (name for name in mean_field_keys if name == "mean_field_mean"),
             mean_field_keys[0] if mean_field_keys else None,
         )
         if preferred_key is not None:
@@ -153,6 +153,7 @@ class ExampleDiagnostics:
         admitted_region_count: int,
         newly_admitted: list[int],
         readiness_by_region: dict[int, float],
+        control_state: dict[str, Any],
     ) -> None:
         self.iterations.append(
             {
@@ -164,6 +165,7 @@ class ExampleDiagnostics:
                 "admitted_region_count": admitted_region_count,
                 "newly_admitted_regions": newly_admitted,
                 "readiness_by_region": readiness_by_region,
+                "control": control_state,
                 "regions": [
                     {
                         "region": region.index,
@@ -209,12 +211,17 @@ class ExampleDiagnostics:
                     "advanced",
                     "admitted",
                     "readiness",
+                    "progress_tokens",
+                    "blocked",
+                    "urgent",
                 ),
             )
             writer.writeheader()
             for step in self.iterations:
                 advanced = set(step["advanced_regions"])
                 scheduled = set(step["scheduled_regions"])
+                blocked = set(step["control"]["blocked_regions"])
+                urgent = set(step["control"]["urgent_regions"])
                 for region in step["regions"]:
                     writer.writerow(
                         {
@@ -231,6 +238,11 @@ class ExampleDiagnostics:
                             "readiness": step["readiness_by_region"].get(
                                 region["region"], ""
                             ),
+                            "progress_tokens": step["control"][
+                                "progress_tokens"
+                            ].get(region["region"], 0),
+                            "blocked": int(region["region"] in blocked),
+                            "urgent": int(region["region"] in urgent),
                         }
                     )
 

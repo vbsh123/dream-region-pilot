@@ -87,6 +87,41 @@ logs top-k probability mass and `paper_exact: false`. The shared tail can
 overstate similarity; do not interpret a dense Mean-Field graph without first
 checking retained mass.
 
+## Controlled scheduling probe
+
+After inspecting the dynamic graphs, run the first scheduling comparison:
+
+```bash
+cd /workspace/dream-region-pilot
+bash scripts/run_controlled_scheduler_probe.sh \
+  outputs/gsm8k_controlled_scheduler_probe_2
+```
+
+This runs the same two examples under:
+
+```text
+wavefront_probe       W=8 and 15% readiness, no dependency control
+controlled_dapd       persistent DAPD edges
+controlled_jsd        persistent Mean-Field/JSD mean edges
+controlled_combo      persistent DAPD ∩ JSD edges
+```
+
+There is no round robin or graph coloring. All admitted, unblocked regions are
+normally serviced together. Edges are oriented by response position. A child
+is paused if it reveals more tokens than its parent; a parent is paused only
+when its lead exceeds eight tokens. The lagging endpoint then receives its
+ordinary next Dream local update. No extra token is forced, and a zero-token
+update does not count as progress.
+
+The all-mask graph cannot control scheduling. A dependency edge activates only
+after both endpoints have revealed at least one token and it appears in two
+consecutive `K=4` snapshots; removal likewise requires two misses. Immediate
+positional neighbors provide the initial loose pipeline once admitted.
+
+Inspect each strategy's `region_state.csv`: `progress_tokens`, `blocked`, and
+`urgent` expose every control decision. The result row also contains the full
+`control_timeline` and final persistent edge set.
+
 ## Vast setup
 
 An RTX 4090 (24 GB) is the intended pilot GPU. Use batch size 1 (the harness

@@ -23,6 +23,10 @@ def load_config(path: Path) -> dict[str, Any]:
     if probe:
         if int(probe.get("max_active_regions", 1)) <= 0:
             raise ValueError("probe.max_active_regions must be positive")
+        if int(probe.get("max_progress_gap", 0)) < 0:
+            raise ValueError("probe.max_progress_gap must be non-negative")
+        if int(probe.get("edge_persistence", 1)) <= 0:
+            raise ValueError("probe.edge_persistence must be positive")
         for key in ("spawn_readiness", "readiness_confidence_threshold"):
             value = float(probe.get(key, 0.0))
             if not 0.0 <= value <= 1.0:

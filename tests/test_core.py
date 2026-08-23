@@ -80,3 +80,41 @@ def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():
     assert matrix[0, 1] > matrix[0, 2]
     assert raw_matrix[0, 1] > raw_matrix[0, 2]
     assert metadata["paper_exact"] is True
+
+
+def test_controlled_scheduler_prioritizes_a_lagging_child_without_equalizing():
+    regions = build_fixed_regions(8, 4)
+    scheduler = RegionScheduler(
+        regions,
+        mode="controlled_dapd",
+        max_active_regions=2,
+        max_progress_gap=2,
+        edge_persistence=2,
+    )
+    scheduler.admitted_count = 2
+    regions[0].remaining_mask_indices = (3,)
+    regions[1].remaining_mask_indices = (4, 5, 6, 7)
+    allowed = scheduler.regions_allowed_to_advance(4)
+    assert [region.index for region in allowed] == [1]
+    assert scheduler.last_blocked_regions == {0}
+    assert scheduler.last_urgent_regions == {1}
+
+
+def test_dependency_edge_requires_real_progress_and_two_observations():
+    regions = build_fixed_regions(8, 4)
+    scheduler = RegionScheduler(
+        regions,
+        mode="controlled_dapd",
+        max_active_regions=2,
+        edge_persistence=2,
+    )
+    scheduler.admitted_count = 2
+    edge = [{"left": 0, "right": 1, "score": 1.0}]
+    scheduler.observe_dependency_edges(edge)
+    assert scheduler.active_dependency_edges == set()
+    regions[0].remaining_mask_indices = (1, 2, 3)
+    regions[1].remaining_mask_indices = (5, 6, 7)
+    scheduler.observe_dependency_edges(edge)
+    assert scheduler.active_dependency_edges == set()
+    scheduler.observe_dependency_edges(edge)
+    assert scheduler.active_dependency_edges == {(0, 1)}

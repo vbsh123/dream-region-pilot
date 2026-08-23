@@ -47,6 +47,8 @@ probe:
   # top-token probability reaches the separate confidence threshold below.
   spawn_readiness: 0.15
   readiness_confidence_threshold: 0.50
+  max_progress_gap: 8
+  edge_persistence: 2
   mean_field:
     enabled: true
     # The paper is exact over vocabulary but uses a small (20-token) active

@@ -249,6 +249,7 @@ def make_dependency_snapshot(
     threshold: float,
     additional_token_dependencies: dict[str, torch.Tensor] | None = None,
     additional_thresholds: dict[str, list[float]] | None = None,
+    additional_aggregators: dict[str, str] | None = None,
     combination_threshold: float | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> DependencySnapshot:
@@ -274,6 +275,7 @@ def make_dependency_snapshot(
         )
     }
     additional_thresholds = additional_thresholds or {}
+    additional_aggregators = additional_aggregators or {}
     for signal_name, token_matrix in signal_token_matrices.items():
         matrices = aggregate_all_region_dependencies(
             token_matrix,
@@ -283,7 +285,12 @@ def make_dependency_snapshot(
         )
         for method_name, region_matrix in matrices.items():
             signal_region_matrices[f"{signal_name}_{method_name}"] = region_matrix
-        selected = matrices[aggregator]
+        signal_aggregator = additional_aggregators.get(signal_name, aggregator)
+        if signal_aggregator not in matrices:
+            raise ValueError(
+                f"Unknown aggregator {signal_aggregator!r} for {signal_name!r}"
+            )
+        selected = matrices[signal_aggregator]
         thresholds = additional_thresholds.get(signal_name, [])
         for signal_threshold in thresholds:
             extra_parents, extra_edges = threshold_region_graph(

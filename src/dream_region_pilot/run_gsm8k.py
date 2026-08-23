@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mean-field-topk", type=int)
     parser.add_argument("--mean-field-thresholds", type=float, nargs="+")
     parser.add_argument("--mean-field-combination-threshold", type=float)
+    parser.add_argument("--max-progress-gap", type=int)
+    parser.add_argument("--edge-persistence", type=int)
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
@@ -133,6 +135,8 @@ def main() -> None:
         "max_active_regions": args.probe_window,
         "spawn_readiness": args.spawn_readiness,
         "readiness_confidence_threshold": args.readiness_confidence_threshold,
+        "max_progress_gap": args.max_progress_gap,
+        "edge_persistence": args.edge_persistence,
     }
     for key, value in probe_overrides.items():
         if value is not None:
@@ -155,6 +159,9 @@ def main() -> None:
         "async_lag2",
         "async_lag4",
         "wavefront_probe",
+        "controlled_dapd",
+        "controlled_jsd",
+        "controlled_combo",
     }
     unknown = set(strategies) - allowed
     if unknown:
@@ -211,7 +218,9 @@ def main() -> None:
                 seed_everything(seed)
                 diagnostics_dir = None
                 if example_index < diagnostics_count and (
-                    strategy.startswith("async_") or strategy == "wavefront_probe"
+                    strategy.startswith("async_")
+                    or strategy == "wavefront_probe"
+                    or strategy.startswith("controlled_")
                 ):
                     diagnostics_dir = (
                         output_dir
@@ -273,8 +282,12 @@ def main() -> None:
             "Completed parents release children because strict positive lag otherwise deadlocks terminal child steps.",
             "wavefront_probe admits at most one positional region per forward, uses W as a maximum active-region count, and uses a FlowBlock-style confidence acceptance ratio only for admission.",
             "The 15% spawn threshold is theta_spawn; the separate token confidence threshold defaults to 0.5, matching FlowBlock's reported math setting but not Dream's entropy commit rule.",
-            "Mean-Field JSD is diagnostic-only and does not alter token commitments or admissions in this phase.",
+            "Mean-Field JSD is diagnostic-only in wavefront_probe; controlled_jsd and controlled_combo use its persistent region edges for pausing decisions but never change admission or token scoring.",
             "The all-canvas Mean-Field signal uses a top-k-union plus shared-tail approximation; retained probability mass is logged and paper_exact is false unless top-k equals the vocabulary size.",
+            "Controlled modes activate an edge only after both endpoints reveal a token and the edge persists for two graph observations.",
+            "Controlled modes normally advance every unblocked admitted region; they do not round-robin or graph-color components.",
+            "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
+            "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses a zero-shot chat prompt requesting a #### numeric answer; this is not claimed to reproduce DAPD paper evaluation prompting.",
         ],
     }

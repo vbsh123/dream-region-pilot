@@ -146,9 +146,10 @@ These are not claims from DAPD or Dream:
     needed.
 18. **Mean-Field thresholds are swept, not pretended to be calibrated.** The
     diagnostic writes graphs at 0.50, 0.70, 0.80, 0.90, and 0.95. The 0.90 graph
-    is only the initial visualization/combination choice. DAPD retains its
-    independently scaled 0.005 threshold. Raw matrices from these unlike scales
-    are never averaged.
+    is only the initial visualization/combination choice. Region-level
+    Mean-Field graphs use mean aggregation because top-10%-mean saturated on
+    the first probe; DAPD retains top-10%-mean at its independently scaled
+    0.005 threshold. Raw matrices from these unlike scales are never averaged.
 19. **Signal combinations are boolean and auditable.** At the DAPD threshold
     and Mean-Field 0.90 threshold, the probe logs both union (either signal) and
     intersection (both signals). This avoids inventing an unjustified numeric
@@ -175,6 +176,23 @@ regions into one clock domain from that point forward while leaving unrelated
 domains concurrent. Because Dream commitments are irreversible, grouping can
 only synchronize future reveal budgets; it cannot revise tokens already
 committed before the dependency appeared.
+
+## First controlled scheduler
+
+The implemented follow-up deliberately avoids round robin and graph coloring.
+Every admitted region normally advances. For an oriented control edge
+`parent -> child`, actual progress is the number of revealed tokens. The child
+is paused only if it gets ahead of the parent; the parent is paused only if its
+lead exceeds eight tokens. This is a loose bounded-skew controller, not clock
+equality. Pausing a leader forces service of the lagging endpoint but does not
+force Dream to reveal an extra low-confidence token.
+
+Step-zero dependencies are diagnostic only. A dynamic edge becomes active
+after both endpoints have nonzero revealed-token progress and two consecutive
+observations; two consecutive misses remove it. Immediate positional-neighbor
+edges supply the initial pipeline. The comparison holds this scheduler fixed
+and varies only the dynamic graph source: DAPD, Mean-Field/JSD mean, or their
+intersection. The readiness-only wavefront remains the required control.
 
 ## Mathematical limitation
 
