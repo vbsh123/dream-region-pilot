@@ -74,6 +74,21 @@ def _last_boxed(text: str) -> str | None:
         command = text.find("\\boxed", start)
         if command < 0:
             return last
+        opening = text.find("{", command + len("\\boxed"))
+        if opening < 0:
+            return last
+        depth = 0
+        for index in range(opening, len(text)):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    last = text[opening + 1 : index].strip()
+                    start = index + 1
+                    break
+        else:
+            return last
 
 
 def _final_marked_text(text: str) -> str | None:
@@ -93,21 +108,6 @@ def _canonical_text(value: str | None) -> str | None:
     cleaned = re.sub(r"\([^)]*\)", "", value)
     cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned.lower()).strip()
     return cleaned or None
-        opening = text.find("{", command + len("\\boxed"))
-        if opening < 0:
-            return last
-        depth = 0
-        for index in range(opening, len(text)):
-            if text[index] == "{":
-                depth += 1
-            elif text[index] == "}":
-                depth -= 1
-                if depth == 0:
-                    last = text[opening + 1 : index].strip()
-                    start = index + 1
-                    break
-        else:
-            return last
 
 
 def score_generation(
