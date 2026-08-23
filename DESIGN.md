@@ -15,6 +15,11 @@ The pilot was designed against these read-only references:
   answer extraction.
 - Dream-v0-Instruct-7B is pinned to Hugging Face revision
   `05334cb9faaf763692dcf9d8737c642be2b2a6ae`.
+- FlowBlock, arXiv `2607.17652`, and its public implementation were inspected
+  for the distinction between window size, per-token commit confidence, and
+  frontier spawn readiness.
+- Mean-Field Parallel Decoding, arXiv `2606.15805`, was inspected for its exact
+  predictive-overlap definition and within-active-set normalization.
 
 The DAPD implementation is not copied into this repository. Vast setup checks
 out the exact DAPD commit, and the pilot imports its Dream Q/K hook,
@@ -111,6 +116,65 @@ These are not claims from DAPD or Dream:
     two-example probe recomputes this every forward. A dense
     graph that positional orientation turns into a near-total order is retained
     as a negative result; the scheduler does not sparsify it behind the scenes.
+13. **The new wavefront probe is admission-only, not backpressure.** It begins
+    with R0 and admits at most one next positional region per global iteration.
+    Up to `W=8` admitted, unfinished regions evolve concurrently. There is no
+    dependency-based pausing or clock merging yet; adding it before verifying
+    graph dynamics would confound the diagnostic.
+14. **The 15% gate follows FlowBlock's acceptance-ratio shape.** For each
+    frontier region, readiness is the fraction of its currently masked tokens
+    whose top-token probability is at least `0.5`. The next region is admitted
+    if that fraction is at least `0.15`. The `0.5` cutoff is FlowBlock's
+    reported math commit threshold; Dream's actual commit rule remains entropy
+    scheduling. This is a cross-model approximation and is labelled as such.
+15. **Graph interval defaults to `K=4`.** A 32-step local schedule then yields
+    roughly eight to ten snapshots over a wavefront decode. This is a starting
+    diagnostic resolution, not a tuned value. If edge turnover occurs entirely
+    between snapshots, compare K=2; if graphs barely change, compare K=8.
+16. **Mean-Field interaction is used as a dependency proxy, not as its paper's
+    commit policy.** The paper defines
+    `D_ij = 1 - JSD(pi_i, pi_j) / ln(2)`, max-normalizes `D` within the masked
+    active set, and then uses it as an inhibitory term in a mean-field commit
+    update. This pilot stops after `D`: it aggregates token pairs into the same
+    fixed regions as DAPD and never applies the paper's mean-field commit rule.
+17. **All-canvas JSD is explicitly approximate.** Exact pairwise JSD costs
+    `O(m^2 |V|)` and the paper controls it with a 20-token active block. With up
+    to 256 masks, the probe instead compares each pair on the union of the two
+    top-256 supports plus a shared residual bucket. This coarsening can
+    overestimate similarity when the omitted tails differ. Each snapshot logs
+    mean/min/max retained top-k mass so the approximation can be rejected if
+    needed.
+18. **Mean-Field thresholds are swept, not pretended to be calibrated.** The
+    diagnostic writes graphs at 0.50, 0.70, 0.80, 0.90, and 0.95. The 0.90 graph
+    is only the initial visualization/combination choice. DAPD retains its
+    independently scaled 0.005 threshold. Raw matrices from these unlike scales
+    are never averaged.
+19. **Signal combinations are boolean and auditable.** At the DAPD threshold
+    and Mean-Field 0.90 threshold, the probe logs both union (either signal) and
+    intersection (both signals). This avoids inventing an unjustified numeric
+    weighting between attention scores near 0.005 and JSD similarities in
+    `[0,1]`.
+20. **“New dependency” is observable.** For every signal and snapshot, logs
+    include added/removed region edges and Jaccard overlap with the preceding
+    edge set. Active-region membership is also retained because an edge removed
+    solely when one region finishes is not evidence that semantic dependence
+    disappeared.
+
+## Decision rule after the dynamic graph probe
+
+Continue to dependency-driven clock grouping only if at least one signal shows
+repeatable, non-adjacent edge births that persist for more than one snapshot
+and are not explained by regions completing. Prefer the intersection graph if
+DAPD and predictive overlap agree; use the union only as a recall-oriented
+ablation. If Mean-Field graphs are dense while retained top-k mass is low, first
+increase top-k or reduce the compared active set rather than tuning the graph
+threshold around an unreliable tail approximation.
+
+If useful structure appears, the next scheduler should group connected
+regions into one clock domain from that point forward while leaving unrelated
+domains concurrent. Because Dream commitments are irreversible, grouping can
+only synchronize future reveal budgets; it cannot revise tokens already
+committed before the dependency appeared.
 
 ## Mathematical limitation
 

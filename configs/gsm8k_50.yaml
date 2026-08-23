@@ -40,6 +40,22 @@ dependency:
   gamma: 2.0
   threshold: 0.005
 
+probe:
+  # W=8 is the maximum active-region window for the 8 x 32-token canvas.
+  max_active_regions: 8
+  # FlowBlock-style admission: fraction of remaining frontier masks whose
+  # top-token probability reaches the separate confidence threshold below.
+  spawn_readiness: 0.15
+  readiness_confidence_threshold: 0.50
+  mean_field:
+    enabled: true
+    # The paper is exact over vocabulary but uses a small (20-token) active
+    # block. For the 256-token probe, use the documented top-k + tail proxy.
+    topk: 256
+    pair_chunk_size: 128
+    thresholds: [0.50, 0.70, 0.80, 0.90, 0.95]
+    combination_threshold: 0.90
+
 experiment:
   strategies:
     - vanilla

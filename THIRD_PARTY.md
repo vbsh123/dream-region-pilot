@@ -14,3 +14,14 @@ This repository does not vendor DAPD or Dream.
 
 The Vast dependency versions follow DAPD's pinned public `env.yml` where they
 overlap this minimal pilot.
+
+The diagnostic implementation also follows equations from, but does not copy
+source code from:
+
+- *Mean-Field Parallel Decoding for Discrete Diffusion Language Models*, arXiv
+  `2606.15805`: normalized predictive overlap
+  `1 - JSD(p_i, p_j) / ln(2)`.
+- *FlowBlock*, arXiv `2607.17652`, and `Red-EAD/FlowBlock`: the distinction
+  between maximum active window `W`, per-token confidence threshold, and the
+  frontier acceptance-ratio spawn threshold. No FlowBlock source is imported
+  or vendored.

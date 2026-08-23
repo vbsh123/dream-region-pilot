@@ -25,6 +25,68 @@ See [DESIGN.md](DESIGN.md) before interpreting results. It separates requested
 design from choices introduced by this implementation and explains the exact
 local-clock limitation.
 
+## Recommended next step: dynamic graph probe
+
+The next experiment is deliberately diagnostic-only. It starts a positional
+wavefront with eight 32-token regions (`W=8`), admits at most one new region per
+global iteration, and uses a loose FlowBlock-style admission threshold:
+
+```text
+token is ready:       max vocabulary probability >= 0.50
+frontier is ready:    ready remaining masks / remaining masks >= 0.15
+graph snapshot:       every K=4 global forwards
+```
+
+`0.15` is therefore the spawn fraction (`theta_spawn`), not “15% of the block
+has already been committed.” The token commit policy remains Dream entropy;
+confidence is used only to admit the next region. `W=8` is the maximum window,
+so it does not bind once all eight regions have been admitted.
+
+At every graph snapshot the same forward supplies DAPD attention scores,
+Mean-Field-style predictive-overlap scores
+`1 - JSD(p_i, p_j) / ln(2)`, and thresholded region graphs for each signal.
+Union and intersection graphs are also written at the configured primary
+thresholds. None of these graphs changes scheduling or commitments in this
+phase. Clock merging is a later experiment.
+
+Run two examples on Vast:
+
+```bash
+cd /workspace/dream-region-pilot
+bash scripts/run_dynamic_graph_probe.sh outputs/gsm8k_dynamic_graph_probe_2
+```
+
+Inspect:
+
+```text
+outputs/gsm8k_dynamic_graph_probe_2/diagnostics/example_000/wavefront_probe/graph_metrics.csv
+outputs/gsm8k_dynamic_graph_probe_2/diagnostics/example_000/wavefront_probe/graph_metrics_over_time.png
+outputs/gsm8k_dynamic_graph_probe_2/diagnostics/example_000/wavefront_probe/graph_timeline.json
+outputs/gsm8k_dynamic_graph_probe_2/diagnostics/example_000/wavefront_probe/region_state.csv
+```
+
+For a compact terminal comparison:
+
+```bash
+python scripts/inspect_dynamic_graphs.py \
+  outputs/gsm8k_dynamic_graph_probe_2/diagnostics/example_000/wavefront_probe/graph_timeline.json
+```
+
+`graph_metrics.csv` is long-form by `iteration,signal`. It records edge
+additions/removals, edge-set Jaccard similarity to the previous snapshot,
+density, degree, components, parent counts, and adjacent versus non-adjacent
+edges. The NPZ files retain both full token-token matrices.
+
+The Mean-Field paper computes full-vocabulary JSD at cost
+`O(masked_tokens^2 * vocabulary)`, while its practical experiments bound the
+active block (reported block size 20). Applying that literally to all 256
+canvas masks is a poor 4090 pilot. The default therefore uses a transparent
+`topk=256` approximation: for each token pair it computes JSD on the union of
+their top-k supports plus one shared residual-tail bucket. Every graph JSON
+logs top-k probability mass and `paper_exact: false`. The shared tail can
+overstate similarity; do not interpret a dense Mean-Field graph without first
+checking retained mass.
+
 ## Vast setup
 
 An RTX 4090 (24 GB) is the intended pilot GPU. Use batch size 1 (the harness
@@ -51,7 +113,7 @@ dependency-enabled forward genuinely runs out of GPU memory, stop and record
 the error rather than silently changing canvas length, precision, or attention
 extraction. Those would be experimental changes, not setup fixes.
 
-## Two-example graph probe
+## Original fixed-lag graph probe
 
 Before the full evaluation, run:
 

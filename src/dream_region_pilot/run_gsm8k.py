@@ -36,6 +36,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gamma", type=float)
     parser.add_argument("--diagnostic-examples", type=int)
     parser.add_argument("--diagnostic-snapshot-interval", type=int)
+    parser.add_argument("--probe-window", type=int)
+    parser.add_argument("--spawn-readiness", type=float)
+    parser.add_argument("--readiness-confidence-threshold", type=float)
+    parser.add_argument("--mean-field-topk", type=int)
+    parser.add_argument("--mean-field-thresholds", type=float, nargs="+")
+    parser.add_argument("--mean-field-combination-threshold", type=float)
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
@@ -121,6 +127,24 @@ def main() -> None:
         config["experiment"][
             "diagnostic_snapshot_interval"
         ] = args.diagnostic_snapshot_interval
+    probe_config = config.setdefault("probe", {})
+    mean_field_config = probe_config.setdefault("mean_field", {})
+    probe_overrides = {
+        "max_active_regions": args.probe_window,
+        "spawn_readiness": args.spawn_readiness,
+        "readiness_confidence_threshold": args.readiness_confidence_threshold,
+    }
+    for key, value in probe_overrides.items():
+        if value is not None:
+            probe_config[key] = value
+    if args.mean_field_topk is not None:
+        mean_field_config["topk"] = args.mean_field_topk
+    if args.mean_field_thresholds is not None:
+        mean_field_config["thresholds"] = args.mean_field_thresholds
+    if args.mean_field_combination_threshold is not None:
+        mean_field_config["combination_threshold"] = (
+            args.mean_field_combination_threshold
+        )
     strategies = args.strategies or list(config["experiment"]["strategies"])
     allowed = {
         "vanilla",
@@ -130,6 +154,7 @@ def main() -> None:
         "async_lag1",
         "async_lag2",
         "async_lag4",
+        "wavefront_probe",
     }
     unknown = set(strategies) - allowed
     if unknown:
@@ -185,7 +210,9 @@ def main() -> None:
                 seed = base_seed + example_index
                 seed_everything(seed)
                 diagnostics_dir = None
-                if example_index < diagnostics_count and strategy.startswith("async_"):
+                if example_index < diagnostics_count and (
+                    strategy.startswith("async_") or strategy == "wavefront_probe"
+                ):
                     diagnostics_dir = (
                         output_dir
                         / "diagnostics"
@@ -212,6 +239,7 @@ def main() -> None:
                         diagnostic_snapshot_interval=int(
                             config["experiment"]["diagnostic_snapshot_interval"]
                         ),
+                        probe=probe_config,
                     )
                 prediction = extract_answer(generated["generation"])
                 row = {
@@ -243,6 +271,10 @@ def main() -> None:
             "Regional modes use one linear Dream timestep schedule per fixed region.",
             "Backpressure clocks count non-empty commitment events; a separate schedule cursor consumes zero-transfer Dream schedule points.",
             "Completed parents release children because strict positive lag otherwise deadlocks terminal child steps.",
+            "wavefront_probe admits at most one positional region per forward, uses W as a maximum active-region count, and uses a FlowBlock-style confidence acceptance ratio only for admission.",
+            "The 15% spawn threshold is theta_spawn; the separate token confidence threshold defaults to 0.5, matching FlowBlock's reported math setting but not Dream's entropy commit rule.",
+            "Mean-Field JSD is diagnostic-only and does not alter token commitments or admissions in this phase.",
+            "The all-canvas Mean-Field signal uses a top-k-union plus shared-tail approximation; retained probability mass is logged and paper_exact is false unless top-k equals the vocabulary size.",
             "GSM8K uses a zero-shot chat prompt requesting a #### numeric answer; this is not claimed to reproduce DAPD paper evaluation prompting.",
         ],
     }

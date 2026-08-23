@@ -66,6 +66,10 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     float(row["dependency_seconds"]) for row in selected
                 )
                 / count,
+                "mean_mean_field_seconds": sum(
+                    float(row.get("mean_field_seconds", 0.0)) for row in selected
+                )
+                / count,
                 "mean_graph_edge_density": (
                     sum(densities) / len(densities) if densities else None
                 ),

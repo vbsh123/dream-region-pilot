@@ -19,4 +19,15 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("Initial pilot region_size must be 16, 32, or 64")
     if int(generation["steps"]) <= 0 or int(generation["max_new_tokens"]) <= 0:
         raise ValueError("steps and max_new_tokens must be positive")
+    probe = config.get("probe", {})
+    if probe:
+        if int(probe.get("max_active_regions", 1)) <= 0:
+            raise ValueError("probe.max_active_regions must be positive")
+        for key in ("spawn_readiness", "readiness_confidence_threshold"):
+            value = float(probe.get(key, 0.0))
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"probe.{key} must be in [0, 1]")
+        mean_field = probe.get("mean_field", {})
+        if mean_field and int(mean_field.get("topk", 1)) <= 0:
+            raise ValueError("probe.mean_field.topk must be positive")
     return config

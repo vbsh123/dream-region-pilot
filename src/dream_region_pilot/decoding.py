@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from .commit import commit_active_regions
 from .dependencies import DAPDDreamAdapter, graph_summary, make_dependency_snapshot
 from .diagnostics import ExampleDiagnostics
+from .mean_field import topk_tail_jsd_dependency
 from .regions import build_fixed_regions, refresh_remaining_masks
 from .scheduler import RegionScheduler, parse_strategy
 
@@ -51,6 +52,36 @@ def decode_response(tokenizer, response: torch.Tensor) -> tuple[str, int]:
         len(values),
     )
     return tokenizer.decode(values[:stop], skip_special_tokens=True).strip(), stop
+
+
+def region_readiness_from_logits(
+    logits: torch.Tensor,
+    *,
+    prompt_length: int,
+    regions,
+    confidence_threshold: float,
+) -> dict[int, float]:
+    """FlowBlock-style acceptance ratio on each region's remaining masks."""
+    response_logits = logits[0, prompt_length:].float()
+    maximum = response_logits.max(dim=-1).values
+    maximum_probability = (maximum - torch.logsumexp(response_logits, dim=-1)).exp()
+    readiness: dict[int, float] = {}
+    for region in regions:
+        if region.done:
+            readiness[region.index] = 1.0
+            continue
+        indices = torch.tensor(
+            region.remaining_mask_indices,
+            dtype=torch.long,
+            device=response_logits.device,
+        )
+        readiness[region.index] = float(
+            (maximum_probability.index_select(0, indices) >= confidence_threshold)
+            .float()
+            .mean()
+            .item()
+        )
+    return readiness
 
 
 @torch.no_grad()
@@ -96,6 +127,7 @@ def decode_vanilla(
         "wall_clock_seconds": elapsed,
         "dependency_recomputations": 0,
         "dependency_seconds": 0.0,
+        "mean_field_seconds": 0.0,
         "schedule_approximation": False,
     }
 
@@ -113,6 +145,7 @@ def decode_regional(
     release_completed_parents: bool,
     diagnostics_dir: Path | None,
     diagnostic_snapshot_interval: int,
+    probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mode, lag = parse_strategy(strategy)
     device = prompt.device
@@ -126,11 +159,14 @@ def decode_regional(
     tokens = F.pad(prompt, (0, generation_length), value=mask_id)
     regions = build_fixed_regions(generation_length, region_size)
     refresh_remaining_masks(regions, [True] * generation_length)
+    probe = probe or {}
     scheduler = RegionScheduler(
         regions,
         mode=mode,
         lag=lag,
         release_completed_parents=release_completed_parents,
+        max_active_regions=int(probe.get("max_active_regions", len(regions))),
+        spawn_readiness=float(probe.get("spawn_readiness", 0.15)),
     )
     diagnostics = (
         ExampleDiagnostics(diagnostics_dir, diagnostic_snapshot_interval)
@@ -141,14 +177,20 @@ def decode_regional(
     recompute_interval = int(dependency["recompute_interval"])
     if recompute_interval <= 0:
         raise ValueError("dependency.recompute_interval must be positive")
-    use_graph = mode == "fixed_lag"
+    use_graph = mode in {"fixed_lag", "wavefront_probe"}
+    mean_field_config = probe.get("mean_field", {})
+    use_mean_field = mode == "wavefront_probe" and bool(
+        mean_field_config.get("enabled", False)
+    )
     latest_snapshot = None
     nfe = 0
     dependency_recomputations = 0
     dependency_seconds = 0.0
     diagnostic_seconds = 0.0
+    mean_field_seconds = 0.0
     graph_summaries: list[dict[str, Any]] = []
     tokens_committed_per_forward: list[int] = []
+    admission_events: list[dict[str, Any]] = []
 
     synchronize(device)
     started = time.perf_counter()
@@ -170,6 +212,29 @@ def decode_regional(
             synchronize(device)
             dependency_seconds += time.perf_counter() - dependency_started
             dependency_recomputations += 1
+            additional_dependencies = None
+            dependency_metadata: dict[str, Any] = {}
+            if use_mean_field:
+                mean_field_started = time.perf_counter()
+                (
+                    mean_field_raw_token,
+                    mean_field_token,
+                    mean_field_metadata,
+                ) = topk_tail_jsd_dependency(
+                    logits[:, prompt_length:],
+                    response_mask,
+                    topk=int(mean_field_config.get("topk", 256)),
+                    pair_chunk_size=int(
+                        mean_field_config.get("pair_chunk_size", 128)
+                    ),
+                )
+                synchronize(device)
+                mean_field_seconds += time.perf_counter() - mean_field_started
+                additional_dependencies = {
+                    "mean_field_raw": mean_field_raw_token,
+                    "mean_field": mean_field_token,
+                }
+                dependency_metadata["mean_field"] = mean_field_metadata
             latest_snapshot = make_dependency_snapshot(
                 raw_token=raw_token,
                 normalized_token=normalized_token,
@@ -179,9 +244,42 @@ def decode_regional(
                 topk_percent=float(dependency["topk_percent"]),
                 gamma=float(dependency["gamma"]),
                 threshold=float(dependency["threshold"]),
+                additional_token_dependencies=additional_dependencies,
+                additional_thresholds=(
+                    {
+                        "mean_field": [
+                            float(value)
+                            for value in mean_field_config.get(
+                                "thresholds", [0.5, 0.7, 0.8, 0.9, 0.95]
+                            )
+                        ]
+                    }
+                    if use_mean_field
+                    else None
+                ),
+                combination_threshold=(
+                    float(mean_field_config.get("combination_threshold", 0.9))
+                    if use_mean_field
+                    else None
+                ),
+                metadata=dependency_metadata,
             )
-            scheduler.set_parents(latest_snapshot.parents)
-            graph_summaries.append({"iteration": nfe, **graph_summary(latest_snapshot)})
+            if mode == "fixed_lag":
+                scheduler.set_parents(latest_snapshot.parents)
+            graph_summaries.append(
+                {
+                    "iteration": nfe,
+                    **graph_summary(latest_snapshot),
+                    "signals": {
+                        name: {
+                            "threshold": signal_graph.threshold,
+                            **graph_summary(latest_snapshot, signal_graph),
+                        }
+                        for name, signal_graph in latest_snapshot.signal_graphs.items()
+                    },
+                    "metadata": latest_snapshot.metadata,
+                }
+            )
             if diagnostics is not None:
                 diagnostic_started = time.perf_counter()
                 diagnostics.record_dependency(nfe, latest_snapshot)
@@ -189,6 +287,19 @@ def decode_regional(
         else:
             logits = adapter.forward_logits(model, tokens)
         nfe += 1
+
+        readiness_by_region = (
+            region_readiness_from_logits(
+                logits,
+                prompt_length=prompt_length,
+                regions=regions,
+                confidence_threshold=float(
+                    probe.get("readiness_confidence_threshold", 0.5)
+                ),
+            )
+            if mode == "wavefront_probe"
+            else {}
+        )
 
         active = scheduler.regions_allowed_to_advance(local_steps)
         if not active:
@@ -218,6 +329,18 @@ def decode_regional(
             regions,
             (tokens[0, prompt_length:] == mask_id).detach().cpu().tolist(),
         )
+        newly_admitted = scheduler.maybe_admit_next(readiness_by_region)
+        if newly_admitted:
+            admission_events.append(
+                {
+                    "iteration": nfe,
+                    "regions": newly_admitted,
+                    "frontier_region": newly_admitted[0] - 1,
+                    "frontier_readiness": readiness_by_region.get(
+                        newly_admitted[0] - 1
+                    ),
+                }
+            )
         if diagnostics is not None:
             diagnostic_started = time.perf_counter()
             diagnostics.record_iteration(
@@ -227,6 +350,9 @@ def decode_regional(
                 advanced=[region.index for region in advanced],
                 committed=committed,
                 edges=latest_snapshot.edges if latest_snapshot is not None else [],
+                admitted_region_count=scheduler.admitted_count,
+                newly_admitted=newly_admitted,
+                readiness_by_region=readiness_by_region,
             )
             diagnostic_seconds += time.perf_counter() - diagnostic_started
         if nfe > maximum_iterations:
@@ -256,6 +382,8 @@ def decode_regional(
         "diagnostic_seconds_excluded_from_wall_clock": diagnostic_seconds,
         "dependency_recomputations": dependency_recomputations,
         "dependency_seconds": dependency_seconds,
+        "mean_field_seconds": mean_field_seconds,
+        "dependency_signal_seconds": dependency_seconds + mean_field_seconds,
         "graph_summaries": graph_summaries,
         "mean_graph_edge_density": (
             sum(item["edge_density"] for item in graph_summaries)
@@ -267,10 +395,16 @@ def decode_regional(
         "region_schedule_steps": {
             region.index: region.schedule_step for region in regions
         },
+        "admission_events": admission_events,
+        "final_admitted_region_count": scheduler.admitted_count,
         "schedule_approximation": True,
         "schedule_approximation_name": (
             "per_region_linear_time_with_completed_parent_release"
             if mode == "fixed_lag" and release_completed_parents
-            else "per_region_linear_time"
+            else (
+                "flowblock_style_confidence_admission_plus_per_region_linear_time"
+                if mode == "wavefront_probe"
+                else "per_region_linear_time"
+            )
         ),
     }
