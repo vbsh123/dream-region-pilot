@@ -104,6 +104,7 @@ def commit_active_regions(
     top_k: int | None,
     policy: str,
     alg_temp: float | None,
+    region_groups: list[list[Region]] | None = None,
 ) -> dict[int, list[int]]:
     response_mask = tokens[0, prompt_length:] == mask_token_id
     absolute_mask = tokens == mask_token_id
@@ -125,22 +126,35 @@ def commit_active_regions(
     full_confidence[absolute_mask] = confidence.to(logits.dtype)
     full_predictions[absolute_mask] = predictions
 
-    committed: dict[int, list[int]] = {}
-    for region in regions:
-        relative = torch.tensor(
-            region.token_indices, dtype=torch.long, device=tokens.device
-        )
-        masked_relative = relative[response_mask[relative]]
-        count = local_transfer_count(
-            int(masked_relative.numel()),
-            clock=region.schedule_step,
-            local_steps=local_steps,
-            eps=eps,
-        )
+    committed: dict[int, list[int]] = {region.index: [] for region in regions}
+    groups = region_groups or [[region] for region in regions]
+    grouped_indices = [region.index for group in groups for region in group]
+    if sorted(grouped_indices) != sorted(region.index for region in regions):
+        raise ValueError("region_groups must contain every active region exactly once")
+
+    for group in groups:
+        masked_by_region: dict[int, torch.Tensor] = {}
+        count = 0
+        for region in group:
+            relative = torch.tensor(
+                region.token_indices, dtype=torch.long, device=tokens.device
+            )
+            masked_relative = relative[response_mask[relative]]
+            masked_by_region[region.index] = masked_relative
+            count += local_transfer_count(
+                int(masked_relative.numel()),
+                clock=region.schedule_step,
+                local_steps=local_steps,
+                eps=eps,
+            )
         if count == 0:
-            committed[region.index] = []
             continue
-        absolute = masked_relative + prompt_length
+
+        group_relative = torch.cat(
+            [masked_by_region[region.index] for region in group]
+        )
+        count = min(count, int(group_relative.numel()))
+        absolute = group_relative + prompt_length
         scores = full_confidence[0, absolute]
         if alg_temp is None or alg_temp == 0:
             chosen_local = torch.topk(scores, k=count).indices
@@ -148,8 +162,16 @@ def commit_active_regions(
             weights = F.softmax(scores / alg_temp, dim=-1)
             chosen_local = torch.multinomial(weights, num_samples=count)
         selected_absolute = absolute[chosen_local]
+        selected_relative = selected_absolute - prompt_length
         tokens[0, selected_absolute] = full_predictions[0, selected_absolute]
-        committed[region.index] = [
-            int(position.item() - prompt_length) for position in selected_absolute
-        ]
+        for region in group:
+            region_start = region.token_indices[0]
+            region_end = region.token_indices[-1] + 1
+            selected_in_region = selected_relative[
+                (selected_relative >= region_start)
+                & (selected_relative < region_end)
+            ]
+            committed[region.index] = [
+                int(position.item()) for position in selected_in_region
+            ]
     return committed

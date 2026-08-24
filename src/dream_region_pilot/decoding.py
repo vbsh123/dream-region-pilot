@@ -333,6 +333,9 @@ def decode_regional(
         "controlled_dapd",
         "controlled_jsd",
         "controlled_combo",
+        "controlled_dapd_dynamic",
+        "controlled_jsd_dynamic",
+        "controlled_combo_dynamic",
     }
     use_graph = mode in {"fixed_lag", "wavefront_probe"} | graph_controlled_modes
     needs_dapd = mode in {
@@ -340,12 +343,16 @@ def decode_regional(
         "wavefront_probe",
         "controlled_dapd",
         "controlled_combo",
+        "controlled_dapd_dynamic",
+        "controlled_combo_dynamic",
     }
     mean_field_config = probe.get("mean_field", {})
     use_mean_field = mode in {
         "wavefront_probe",
         "controlled_jsd",
         "controlled_combo",
+        "controlled_jsd_dynamic",
+        "controlled_combo_dynamic",
     } and bool(mean_field_config.get("enabled", False))
     mean_field_thresholds = [
         float(value)
@@ -461,10 +468,17 @@ def decode_regional(
             elif mode in graph_controlled_modes:
                 graph_key = {
                     "controlled_dapd": "dapd",
+                    "controlled_dapd_dynamic": "dapd",
                     "controlled_jsd": (
                         f"mean_field_t{combination_threshold:.2f}"
                     ),
+                    "controlled_jsd_dynamic": (
+                        f"mean_field_t{combination_threshold:.2f}"
+                    ),
                     "controlled_combo": (
+                        f"combined_intersection_t{combination_threshold:.2f}"
+                    ),
+                    "controlled_combo_dynamic": (
                         f"combined_intersection_t{combination_threshold:.2f}"
                     ),
                 }[mode]
@@ -523,6 +537,7 @@ def decode_regional(
                 f"strategy={strategy}, clocks={clocks}, "
                 f"release_completed_parents={release_completed_parents}"
             )
+        commit_groups = scheduler.commitment_groups(active)
         committed = commit_active_regions(
             tokens,
             logits,
@@ -536,6 +551,7 @@ def decode_regional(
             top_k=generation.get("top_k"),
             policy=str(generation["commit_policy"]),
             alg_temp=generation.get("alg_temp"),
+            region_groups=commit_groups,
         )
         advanced = scheduler.apply_updates(active, committed)
         tokens_committed_per_forward.append(sum(len(value) for value in committed.values()))
@@ -568,6 +584,10 @@ def decode_regional(
             ],
             "blocked_regions": sorted(scheduler.last_blocked_regions),
             "urgent_regions": sorted(scheduler.last_urgent_regions),
+            "commit_groups": [
+                [region.index for region in group]
+                for group in commit_groups
+            ],
         }
         if scheduler.is_controlled:
             control_timeline.append(control_state)
@@ -660,6 +680,22 @@ def decode_regional(
             if control_timeline
             else 0.0
         ),
+        "iterations_with_pooled_commit_groups": sum(
+            any(len(group) > 1 for group in item.get("commit_groups", []))
+            for item in control_timeline
+        ),
+        "mean_max_commit_group_size": (
+            sum(
+                max(
+                    (len(group) for group in item.get("commit_groups", [])),
+                    default=0,
+                )
+                for item in control_timeline
+            )
+            / len(control_timeline)
+            if control_timeline
+            else 0.0
+        ),
         "final_active_dependency_edges": [
             list(pair) for pair in sorted(scheduler.active_dependency_edges)
         ],
@@ -676,10 +712,15 @@ def decode_regional(
                     else (
                         "persistent_dependency_bounded_progress_skew"
                         if mode in graph_controlled_modes
+                        and not scheduler.uses_dynamic_commit_groups
                         else (
-                            "positional_bounded_progress_skew"
-                            if mode == "controlled_position"
-                            else "per_region_linear_time"
+                            "dynamic_dependency_components_pooled_commitment"
+                            if scheduler.uses_dynamic_commit_groups
+                            else (
+                                "positional_bounded_progress_skew"
+                                if mode == "controlled_position"
+                                else "per_region_linear_time"
+                            )
                         )
                     )
                 )

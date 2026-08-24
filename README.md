@@ -59,10 +59,24 @@ controlled_position   same admission plus adjacent positional bounded skew
 controlled_dapd       positional control plus dynamic DAPD edges
 controlled_jsd        positional control plus dynamic JSD edges
 controlled_combo      positional control plus persistent DAPD intersection JSD
+controlled_dapd_dynamic  DAPD components with pooled commitment selection
+controlled_jsd_dynamic   JSD components with pooled commitment selection
+controlled_combo_dynamic DAPD-intersection-JSD components with pooled selection
 mean_field_repro      paper Algorithm 1 commit policy, exact JSD per active block
 flowblock_proxy       Dream-side W=2, theta=0.60 admission proxy
 vanilla               official Dream diffusion_generate
 ```
+
+The dynamic pooled variants are a separate ablation. At each dependency graph
+refresh they rebuild connected components among active fixed regions. Every
+component receives the sum of its members' ordinary local Dream transfer
+counts, but chooses those tokens jointly across the component instead of
+guaranteeing a separate quota to every member. Existing positional
+backpressure still pauses an outrunning region. Graph splits and merges retain
+real token progress and never remask revealed tokens.
+
+Use `--example-indices` to rerun a particular paired failure without changing
+its dataset index or `1234 + example_index` seed.
 
 `loose_wavefront` is the missing ablation. If it also reaches roughly the same
 accuracy/NFE as `controlled_position`, the large-window loose gate—not bounded

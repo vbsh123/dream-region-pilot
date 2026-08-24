@@ -6,7 +6,7 @@ from dream_region_pilot.benchmarks import (
     prepare_example,
     score_generation,
 )
-from dream_region_pilot.commit import sample_tokens
+from dream_region_pilot.commit import commit_active_regions, sample_tokens
 from dream_region_pilot.dependencies import (
     aggregate_region_dependencies,
     threshold_region_graph,
@@ -170,6 +170,10 @@ def test_new_comparison_strategy_names_parse_without_changing_mode():
     assert parse_strategy("flowblock_proxy") == ("flowblock_proxy", 0)
     assert parse_strategy("loose_wavefront") == ("loose_wavefront", 0)
     assert parse_strategy("controlled_position") == ("controlled_position", 0)
+    assert parse_strategy("controlled_dapd_dynamic") == (
+        "controlled_dapd_dynamic",
+        0,
+    )
 
 
 def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():
@@ -269,6 +273,61 @@ def test_dependency_edge_requires_real_progress_and_two_observations():
     assert scheduler.active_dependency_edges == set()
     scheduler.observe_dependency_edges(edge)
     assert scheduler.active_dependency_edges == {(0, 1)}
+
+
+def test_dynamic_commit_groups_follow_current_dependency_components():
+    regions = build_fixed_regions(8, 2)
+    scheduler = RegionScheduler(regions, mode="controlled_dapd_dynamic")
+    scheduler.active_dependency_edges = {(0, 1), (1, 2)}
+    assert [
+        [region.index for region in group]
+        for group in scheduler.commitment_groups(regions)
+    ] == [[0, 1, 2], [3]]
+
+    scheduler.active_dependency_edges = {(2, 3)}
+    assert [
+        [region.index for region in group]
+        for group in scheduler.commitment_groups(regions)
+    ] == [[0], [1], [2, 3]]
+
+
+def test_pooled_component_selects_jointly_instead_of_per_region():
+    regions = build_fixed_regions(8, 4)
+    for region in regions:
+        region.schedule_step = 1
+    mask_id = 2
+    tokens = torch.full((1, 8), mask_id, dtype=torch.long)
+    logits = torch.tensor(
+        [
+            [
+                [8.0, 0.0, -8.0],
+                [7.0, 0.0, -8.0],
+                [2.0, 1.0, -8.0],
+                [2.0, 1.0, -8.0],
+                [1.1, 1.0, -8.0],
+                [1.1, 1.0, -8.0],
+                [1.1, 1.0, -8.0],
+                [1.1, 1.0, -8.0],
+            ]
+        ]
+    )
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        region_groups=[regions],
+    )
+    assert len(committed[0]) == 2
+    assert committed[1] == []
 
 
 def test_summary_reports_measured_throughput_and_vanilla_speedups():

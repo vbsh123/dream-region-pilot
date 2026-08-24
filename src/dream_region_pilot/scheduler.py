@@ -30,6 +30,9 @@ class RegionScheduler:
             "controlled_dapd",
             "controlled_jsd",
             "controlled_combo",
+            "controlled_dapd_dynamic",
+            "controlled_jsd_dynamic",
+            "controlled_combo_dynamic",
         }
         if self.mode not in valid:
             raise ValueError(f"mode must be one of {sorted(valid)}")
@@ -61,11 +64,22 @@ class RegionScheduler:
             "controlled_dapd",
             "controlled_jsd",
             "controlled_combo",
+            "controlled_dapd_dynamic",
+            "controlled_jsd_dynamic",
+            "controlled_combo_dynamic",
         }
 
     @property
     def is_controlled(self) -> bool:
         return self.mode.startswith("controlled_")
+
+    @property
+    def uses_dynamic_commit_groups(self) -> bool:
+        return self.mode in {
+            "controlled_dapd_dynamic",
+            "controlled_jsd_dynamic",
+            "controlled_combo_dynamic",
+        }
 
     def revealed_tokens(self, region: Region) -> int:
         return len(region.token_indices) - len(region.remaining_mask_indices)
@@ -172,6 +186,41 @@ class RegionScheduler:
         self.last_urgent_regions = urgent - blocked
         return [region for region in admitted if region.index not in blocked]
 
+    def commitment_groups(self, active: list[Region]) -> list[list[Region]]:
+        """Return dynamic dependency components over this iteration's regions.
+
+        Existing strategies retain one independent commitment pool per region.
+        Dynamic strategies pool confidence selection within each connected
+        dependency component. Components are rebuilt from the currently active
+        persistent graph, so merges and splits do not rewrite committed tokens
+        or fabricate clock progress.
+        """
+        if not self.uses_dynamic_commit_groups:
+            return [[region] for region in active]
+
+        by_index = {region.index: region for region in active}
+        adjacency = {index: set() for index in by_index}
+        for left, right in self.active_dependency_edges:
+            if left in adjacency and right in adjacency:
+                adjacency[left].add(right)
+                adjacency[right].add(left)
+
+        groups: list[list[Region]] = []
+        remaining = set(by_index)
+        while remaining:
+            root = min(remaining)
+            stack = [root]
+            component: set[int] = set()
+            while stack:
+                index = stack.pop()
+                if index in component:
+                    continue
+                component.add(index)
+                stack.extend(adjacency[index] - component)
+            remaining -= component
+            groups.append([by_index[index] for index in sorted(component)])
+        return groups
+
     def maybe_admit_next(self, readiness_by_region: dict[int, float]) -> list[int]:
         """Admit at most one new positional region for the next forward.
 
@@ -220,6 +269,9 @@ def parse_strategy(name: str) -> tuple[str, int]:
         "controlled_dapd",
         "controlled_jsd",
         "controlled_combo",
+        "controlled_dapd_dynamic",
+        "controlled_jsd_dynamic",
+        "controlled_combo_dynamic",
     }:
         return name, 0
     prefix = "async_lag"

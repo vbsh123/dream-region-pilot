@@ -112,6 +112,16 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     for row in selected
                 )
                 / count,
+                "mean_iterations_with_pooled_commit_groups": sum(
+                    int(row.get("iterations_with_pooled_commit_groups", 0))
+                    for row in selected
+                )
+                / count,
+                "mean_max_commit_group_size": sum(
+                    float(row.get("mean_max_commit_group_size", 0.0))
+                    for row in selected
+                )
+                / count,
                 "mean_graph_edge_density": (
                     sum(densities) / len(densities) if densities else None
                 ),

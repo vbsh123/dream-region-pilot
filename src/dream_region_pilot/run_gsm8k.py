@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--example-indices", type=int, nargs="+")
     parser.add_argument("--strategies", nargs="+")
     parser.add_argument("--region-size", type=int, choices=(16, 32, 64))
     parser.add_argument("--local-steps", type=int)
@@ -182,6 +183,9 @@ def main() -> None:
         "controlled_dapd",
         "controlled_jsd",
         "controlled_combo",
+        "controlled_dapd_dynamic",
+        "controlled_jsd_dynamic",
+        "controlled_combo_dynamic",
     }
     unknown = set(strategies) - allowed
     if unknown:
@@ -201,7 +205,15 @@ def main() -> None:
                 rows.append(row)
                 completed.add((int(row["example_index"]), str(row["strategy"])))
 
-    dataset = load_benchmark(config["data"], args.limit)
+    if args.example_indices is not None:
+        if any(index < 0 for index in args.example_indices):
+            raise ValueError("--example-indices must be non-negative")
+        requested_indices = list(dict.fromkeys(args.example_indices))
+        dataset = load_benchmark(config["data"], max(requested_indices) + 1)
+        dataset_items = [(index, dataset[index]) for index in requested_indices]
+    else:
+        dataset = load_benchmark(config["data"], args.limit)
+        dataset_items = list(enumerate(dataset))
     task = str(config["data"].get("task", "gsm8k"))
     model, tokenizer = load_model(config["model"])
     dependency_config = config["dependency"]
@@ -215,12 +227,12 @@ def main() -> None:
 
     total = sum(
         (example_index, strategy) not in completed
-        for example_index in range(len(dataset))
+        for example_index, _ in dataset_items
         for strategy in strategies
     )
     with results_path.open("a", encoding="utf-8") as handle:
         progress = tqdm(total=total, desc="Dream region pilot")
-        for example_index, source in enumerate(dataset):
+        for run_position, (example_index, source) in enumerate(dataset_items):
             example = prepare_example(config["data"], source)
             question = example.question
             prompt_text = str(config["data"]["prompt_template"]).format(
@@ -246,7 +258,7 @@ def main() -> None:
                 seed = base_seed + example_index
                 seed_everything(seed)
                 diagnostics_dir = None
-                if example_index < diagnostics_count and (
+                if run_position < diagnostics_count and (
                     strategy.startswith("async_")
                     or strategy == "wavefront_probe"
                     or strategy == "loose_wavefront"
@@ -324,7 +336,8 @@ def main() -> None:
     metadata = {
         "artifact_type": "dream_regional_async_reasoning_pilot",
         "config": config,
-        "examples": len(dataset),
+        "examples": len(dataset_items),
+        "example_indices": [index for index, _ in dataset_items],
         "task": task,
         "strategies": strategies,
         "model_resolved_commit": getattr(model.config, "_commit_hash", None),
@@ -348,6 +361,8 @@ def main() -> None:
             "The all-canvas Mean-Field signal uses a top-k-union plus shared-tail approximation; retained probability mass is logged and paper_exact is false unless top-k equals the vocabulary size.",
             "Controlled modes activate an edge only after both endpoints reveal a token and the edge persists for two graph observations.",
             "Controlled modes normally advance every unblocked admitted region; they do not round-robin or graph-color components.",
+            "The controlled_*_dynamic modes rebuild connected dependency components after every graph update and pool the ordinary Dream commitment budget across each component. They do not remask or alter attention visibility.",
+            "Dynamic component merges and splits preserve each fixed region's revealed tokens, schedule cursor, and real-progress clock; no synthetic clock progress or equalization is introduced.",
             "controlled_position uses the identical admission and bounded-skew controller without dynamic DAPD/JSD edges, isolating whether graph control helps beyond positional staggering.",
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
