@@ -135,12 +135,21 @@ def commit_active_regions(
     for group in groups:
         masked_by_region: dict[int, torch.Tensor] = {}
         count = 0
+        terminal_relative: list[torch.Tensor] = []
         for region in group:
             relative = torch.tensor(
                 region.token_indices, dtype=torch.long, device=tokens.device
             )
             masked_relative = relative[response_mask[relative]]
             masked_by_region[region.index] = masked_relative
+            if region.schedule_step == local_steps - 1:
+                # A pooled component may otherwise spend this region's final
+                # transfer budget on higher-confidence tokens in another
+                # member.  Its schedule cursor would then be exhausted while
+                # masks remain, leaving it permanently ineligible.  Preserve
+                # Dream's terminal-step completion invariant per region; the
+                # rest of the component's budget is still selected jointly.
+                terminal_relative.append(masked_relative)
             count += local_transfer_count(
                 int(masked_relative.numel()),
                 clock=region.schedule_step,
@@ -154,15 +163,33 @@ def commit_active_regions(
             [masked_by_region[region.index] for region in group]
         )
         count = min(count, int(group_relative.numel()))
-        absolute = group_relative + prompt_length
-        scores = full_confidence[0, absolute]
-        if alg_temp is None or alg_temp == 0:
-            chosen_local = torch.topk(scores, k=count).indices
+        reserved_relative = (
+            torch.cat(terminal_relative)
+            if terminal_relative
+            else group_relative[:0]
+        )
+        remaining_budget = count - int(reserved_relative.numel())
+        if remaining_budget < 0:
+            raise RuntimeError("terminal commitment exceeds the group budget")
+
+        if remaining_budget:
+            candidate_mask = ~torch.isin(group_relative, reserved_relative)
+            candidate_relative = group_relative[candidate_mask]
+            candidate_absolute = candidate_relative + prompt_length
+            scores = full_confidence[0, candidate_absolute]
+            if alg_temp is None or alg_temp == 0:
+                chosen_local = torch.topk(scores, k=remaining_budget).indices
+            else:
+                weights = F.softmax(scores / alg_temp, dim=-1)
+                chosen_local = torch.multinomial(
+                    weights, num_samples=remaining_budget
+                )
+            selected_relative = torch.cat(
+                (reserved_relative, candidate_relative[chosen_local])
+            )
         else:
-            weights = F.softmax(scores / alg_temp, dim=-1)
-            chosen_local = torch.multinomial(weights, num_samples=count)
-        selected_absolute = absolute[chosen_local]
-        selected_relative = selected_absolute - prompt_length
+            selected_relative = reserved_relative
+        selected_absolute = selected_relative + prompt_length
         tokens[0, selected_absolute] = full_predictions[0, selected_absolute]
         for region in group:
             region_start = region.token_indices[0]

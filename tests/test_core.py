@@ -330,6 +330,51 @@ def test_pooled_component_selects_jointly_instead_of_per_region():
     assert committed[1] == []
 
 
+def test_pooled_component_cannot_spend_a_regions_terminal_budget_elsewhere():
+    regions = build_fixed_regions(8, 4)
+    regions[0].schedule_step = 3
+    regions[1].schedule_step = 1
+    mask_id = 2
+    tokens = torch.full((1, 8), mask_id, dtype=torch.long)
+    logits = torch.tensor(
+        [
+            [
+                [1.1, 1.0, -8.0],
+                [1.1, 1.0, -8.0],
+                [1.1, 1.0, -8.0],
+                [1.1, 1.0, -8.0],
+                [8.0, 0.0, -8.0],
+                [7.0, 0.0, -8.0],
+                [6.0, 0.0, -8.0],
+                [5.0, 0.0, -8.0],
+            ]
+        ]
+    )
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        region_groups=[regions],
+    )
+
+    assert committed[0] == [0, 1, 2, 3]
+    assert committed[1] == [4]
+    RegionScheduler.apply_updates(regions, committed)
+    assert regions[0].schedule_step == 4
+    assert regions[0].clock == 1
+    assert regions[1].schedule_step == 2
+    assert regions[1].clock == 1
+
+
 def test_summary_reports_measured_throughput_and_vanilla_speedups():
     common = {
         "correct": True,
