@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 source .venv/bin/activate
 
-CONFIG="${1:-configs/gsm8k_50.yaml}"
+CONFIG="${1:-configs/gsm8k_cot_official_50.yaml}"
 OUTPUT_DIR="${2:-outputs/gsm8k_expanded_probe_2}"
 if (( $# >= 2 )); then
   shift 2

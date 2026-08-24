@@ -2,6 +2,7 @@ import torch
 
 from dream_region_pilot.benchmarks import (
     _humaneval_solution,
+    gsm8k_cot_score_details,
     prepare_example,
     score_generation,
 )
@@ -57,6 +58,24 @@ def test_humaneval_full_function_or_body_becomes_complete_solution():
     assert "    return x + 1" in full
     body = _humaneval_solution("return x + 1", source)
     assert body.endswith("    return x + 1\n")
+
+
+def test_lm_eval_gsm8k_cot_strict_and_flexible_filters():
+    colon = gsm8k_cot_score_details("The answer is: 3", "3")
+    assert not colon["strict_match_correct"]
+    assert colon["flexible_extract_correct"]
+
+    official = gsm8k_cot_score_details("The answer is 3.", "3")
+    assert official["strict_match_correct"]
+    assert official["flexible_extract_correct"]
+
+    data = {"task": "gsm8k", "protocol": "lm_eval_gsm8k_cot"}
+    prediction, correct, method = score_generation(
+        data, "First 2, finally 3.", "3"
+    )
+    assert prediction == "3."
+    assert correct
+    assert method == "lm_eval_gsm8k_cot_flexible_extract"
 
 
 def test_region_aggregators_and_positional_orientation():

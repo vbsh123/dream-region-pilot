@@ -115,6 +115,38 @@ def _canonical_text(value: str | None) -> str | None:
     return cleaned or None
 
 
+def gsm8k_cot_score_details(
+    generation: str, reference: str
+) -> dict[str, Any]:
+    """Reproduce lm-eval GSM8K-CoT strict and flexible answer filters."""
+    strict_matches = re.findall(
+        r"The answer is (\-?[0-9\.\,]+).", generation
+    )
+    strict_prediction = strict_matches[0] if strict_matches else None
+
+    flexible_matches = re.findall(
+        r"(-?[$0-9.,]{2,})|(-?[0-9]+)", generation
+    )
+    flexible_prediction = None
+    if flexible_matches:
+        final_match = flexible_matches[-1]
+        flexible_prediction = next(
+            (group for group in final_match if group), None
+        )
+
+    canonical_reference = _canonical_numeric(reference)
+    return {
+        "strict_match_prediction": strict_prediction,
+        "strict_match_correct": (
+            _canonical_numeric(strict_prediction) == canonical_reference
+        ),
+        "flexible_extract_prediction": flexible_prediction,
+        "flexible_extract_correct": (
+            _canonical_numeric(flexible_prediction) == canonical_reference
+        ),
+    }
+
+
 def _python_code_from_generation(generation: str) -> str:
     fenced = re.findall(
         r"```(?:python|py)?\s*\n(.*?)```",
@@ -173,6 +205,13 @@ def score_generation(
 ) -> tuple[str | None, bool, str]:
     task = str(data.get("task", "gsm8k"))
     if task == "gsm8k":
+        if data.get("protocol") == "lm_eval_gsm8k_cot":
+            details = gsm8k_cot_score_details(generation, reference)
+            return (
+                details["flexible_extract_prediction"],
+                bool(details["flexible_extract_correct"]),
+                "lm_eval_gsm8k_cot_flexible_extract",
+            )
         prediction = extract_answer(generation)
         correct = _canonical_numeric(prediction) == _canonical_numeric(reference)
         return prediction, correct, "numeric_final_answer"

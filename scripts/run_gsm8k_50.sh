@@ -10,7 +10,7 @@ shift || true
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 python -m dream_region_pilot.run_gsm8k \
-  --config configs/gsm8k_50.yaml \
+  --config configs/gsm8k_cot_official_50.yaml \
   --output-dir "$OUTPUT_DIR" \
   --limit 50 \
   --strategies \

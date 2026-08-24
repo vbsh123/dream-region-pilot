@@ -49,6 +49,18 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "strategy": strategy,
                 "examples": count,
                 "task_accuracy": sum(bool(row["correct"]) for row in selected) / count,
+                "strict_match_accuracy": (
+                    sum(bool(row["strict_match_correct"]) for row in selected)
+                    / count
+                    if all("strict_match_correct" in row for row in selected)
+                    else None
+                ),
+                "flexible_extract_accuracy": (
+                    sum(bool(row["flexible_extract_correct"]) for row in selected)
+                    / count
+                    if all("flexible_extract_correct" in row for row in selected)
+                    else None
+                ),
                 "mean_nfe": sum(int(row["nfe"]) for row in selected) / count,
                 "total_nfe": total_nfe,
                 "mean_tokens_committed_per_forward": (

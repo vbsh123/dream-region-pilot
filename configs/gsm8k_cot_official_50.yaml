@@ -1,5 +1,3 @@
-# Legacy custom-prompt configuration retained only for old artifact provenance.
-# New GSM8K experiments must use configs/gsm8k_cot_official_50.yaml.
 model:
   name_or_path: Dream-org/Dream-v0-Instruct-7B
   revision: 05334cb9faaf763692dcf9d8737c642be2b2a6ae
@@ -9,15 +7,17 @@ model:
 
 data:
   task: gsm8k
+  protocol: lm_eval_gsm8k_cot
   dataset: openai/gsm8k
   subset: main
   split: test
   limit: 50
+  # Dream's released instruct evaluation overrides gsm8k_cot to zero-shot.
   prompt_template: |-
-    Solve the following math problem. Show your reasoning and end with exactly
-    "#### <number>" on its own line.
-
-    {question}
+    Q: {question}
+    A:
+  # Match the lm-eval tokenizer call, which uses its default special-token path.
+  add_special_tokens: true
 
 generation:
   max_new_tokens: 256
@@ -25,12 +25,18 @@ generation:
   region_size: 32
   local_steps: 32
   eps: 0.001
-  temperature: 0.0
-  top_p: null
+  temperature: 0.1
+  top_p: 0.9
   top_k: null
   commit_policy: entropy
   alg_temp: 0.0
-  seed: 42
+  # lm-eval's default torch seed is 1234. The paired pilot resets this as
+  # 1234 + example index before every strategy to remove strategy-order noise.
+  seed: 1234
+  until:
+    - "Q:"
+    - "</s>"
+    - "<|im_end|>"
 
 dependency:
   dapd_repo: external/DAPD
@@ -44,31 +50,23 @@ dependency:
   threshold: 0.005
 
 probe:
-  # W=8 is the maximum active-region window for the 8 x 32-token canvas.
   max_active_regions: 8
-  # FlowBlock-style admission: fraction of remaining frontier masks whose
-  # top-token probability reaches the separate confidence threshold below.
   spawn_readiness: 0.15
   readiness_confidence_threshold: 0.50
   max_progress_gap: 8
   edge_persistence: 2
-  # Cross-model admission proxy only: W=2 and theta_spawn=0.60. It retains
-  # Dream's full visibility and entropy commit rule, so it is not FlowBlock.
   flowblock_proxy:
     max_active_regions: 2
     spawn_readiness: 0.60
     readiness_confidence_threshold: 0.50
   mean_field:
     enabled: true
-    # The paper is exact over vocabulary but uses a small (20-token) active
-    # block. For the 256-token probe, use the documented top-k + tail proxy.
     topk: 256
     pair_chunk_size: 128
     thresholds: [0.50, 0.70, 0.80, 0.90, 0.95]
     combination_threshold: 0.90
 
 mean_field_baseline:
-  # Algorithm 1 reproduction. The paper's linked repository currently 404s.
   block_size: 32
   threshold: 0.90
   iterations: 2
@@ -77,14 +75,12 @@ mean_field_baseline:
 experiment:
   strategies:
     - vanilla
-    - flowblock_proxy
     - loose_wavefront
-    - mean_field_repro
     - controlled_position
     - controlled_dapd
     - controlled_jsd
     - controlled_combo
   rotate_strategy_order: true
-  diagnostic_examples: 3
+  diagnostic_examples: 0
   diagnostic_snapshot_interval: 4
   release_completed_parents: true

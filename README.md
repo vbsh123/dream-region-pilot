@@ -7,6 +7,21 @@ backpressure.
 Status: implemented locally, deliberately **not run**. No model, dataset,
 environment setup, test, build, or experiment was executed on this PC.
 
+## GSM8K protocol correction
+
+Use `configs/gsm8k_cot_official_50.yaml` for every new GSM8K run. It mirrors
+Dream's released zero-shot `gsm8k_cot` evaluation: `Q: ...\nA:`, the model chat
+template, 256 canvas tokens and steps, temperature 0.1, top-p 0.9, entropy
+selection, lm-eval stop strings, and both strict and flexible answer filters.
+The package also pins Dream's officially tested Transformers 4.46.2 stack.
+For fair paired comparisons, the pilot deliberately resets seed
+`1234 + example_index` before each strategy; upstream lm-eval seeds once, so
+the two paths need aggregate agreement rather than bit-identical samples.
+The older `configs/gsm8k_50.yaml` is retained only to interpret completed
+artifacts; its custom `####` instruction with deterministic sampling caused
+premature direct-answer/EOS collapse and is not a valid published-Dream
+baseline.
+
 ## Expanded baseline and dataset probe
 
 ### First priority: global Dream step sweep
@@ -75,7 +90,7 @@ bash scripts/setup_vast.sh
 Run two examples on each distribution first:
 
 ```bash
-bash scripts/run_expanded_probe.sh configs/gsm8k_50.yaml \
+bash scripts/run_expanded_probe.sh configs/gsm8k_cot_official_50.yaml \
   outputs/gsm8k_expanded_probe_2
 bash scripts/run_expanded_probe.sh configs/asdiv_50.yaml \
   outputs/asdiv_expanded_probe_2
@@ -96,7 +111,7 @@ The focused region-balance attribution can be run identically on GSM8K and
 HumanEval:
 
 ```bash
-bash scripts/run_balanced_attribution_50.sh configs/gsm8k_50.yaml \
+bash scripts/run_balanced_attribution_50.sh configs/gsm8k_cot_official_50.yaml \
   outputs/gsm8k_balanced_attribution_50
 bash scripts/run_balanced_attribution_50.sh configs/humaneval_50.yaml \
   outputs/humaneval_balanced_attribution_50

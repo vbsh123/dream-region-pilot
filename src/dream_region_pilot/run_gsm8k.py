@@ -7,10 +7,16 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import transformers
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from .benchmarks import load_benchmark, prepare_example, score_generation
+from .benchmarks import (
+    gsm8k_cot_score_details,
+    load_benchmark,
+    prepare_example,
+    score_generation,
+)
 from .config import load_config
 from .decoding import decode_mean_field_repro, decode_regional, decode_vanilla
 from .dependencies import DAPDDreamAdapter
@@ -95,14 +101,22 @@ def load_model(model_config: dict[str, Any]):
     return model.to(device).eval(), tokenizer
 
 
-def encode_prompt(tokenizer, prompt: str, device: torch.device) -> torch.Tensor:
+def encode_prompt(
+    tokenizer,
+    prompt: str,
+    device: torch.device,
+    *,
+    add_special_tokens: bool = False,
+) -> torch.Tensor:
     rendered = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}],
         tokenize=False,
         add_generation_prompt=True,
     )
     return tokenizer.encode(
-        rendered, add_special_tokens=False, return_tensors="pt"
+        rendered,
+        add_special_tokens=add_special_tokens,
+        return_tensors="pt",
     ).to(device)
 
 
@@ -212,7 +226,14 @@ def main() -> None:
             prompt_text = str(config["data"]["prompt_template"]).format(
                 question=question
             )
-            prompt = encode_prompt(tokenizer, prompt_text, model.device)
+            prompt = encode_prompt(
+                tokenizer,
+                prompt_text,
+                model.device,
+                add_special_tokens=bool(
+                    config["data"].get("add_special_tokens", False)
+                ),
+            )
             reference = example.reference_answer
             ordered = list(strategies)
             if bool(config["experiment"].get("rotate_strategy_order", True)):
@@ -276,6 +297,11 @@ def main() -> None:
                 prediction, correct, scoring_method = score_generation(
                     config["data"], generated["generation"], reference, source
                 )
+                scoring_details = {}
+                if config["data"].get("protocol") == "lm_eval_gsm8k_cot":
+                    scoring_details = gsm8k_cot_score_details(
+                        generated["generation"], reference
+                    )
                 row = {
                     "example_index": example_index,
                     "task": task,
@@ -286,6 +312,7 @@ def main() -> None:
                     "predicted_answer": prediction,
                     "correct": correct,
                     "scoring_method": scoring_method,
+                    **scoring_details,
                     **generated,
                 }
                 handle.write(json.dumps(row, ensure_ascii=True) + "\n")
@@ -301,6 +328,7 @@ def main() -> None:
         "task": task,
         "strategies": strategies,
         "model_resolved_commit": getattr(model.config, "_commit_hash", None),
+        "transformers_version": transformers.__version__,
         "dapd_revision": adapter.revision,
         "implementation_notes": [
             "Attention visibility is unchanged from Dream.",
@@ -326,6 +354,8 @@ def main() -> None:
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",
             "HumanEval reports deterministic pass@1 from the official OpenAI tests. Generated Python is executed in a restricted child process; the Vast worker should still be treated as disposable rather than as a security sandbox.",
             "The OpenAI HumanEval evaluator is imported from the pinned source-only checkout at external/HumanEval; its legacy setup.py is intentionally not installed.",
+            "configs/gsm8k_cot_official_50.yaml mirrors Dream's released zero-shot lm-eval GSM8K-CoT prompt, temperature 0.1, top-p 0.9, entropy policy, stop strings, chat template, and strict/flexible answer filters.",
+            "For paired strategy attribution, every strategy is reseeded with 1234 plus the example index. Upstream lm-eval seeds once and consumes one continuous RNG stream, so exact sample identity is not expected even when aggregate vanilla accuracy agrees.",
         ],
     }
     (output_dir / "metadata.json").write_text(

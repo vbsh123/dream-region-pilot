@@ -39,19 +39,27 @@ def stop_token_ids(tokenizer) -> set[int]:
     if isinstance(eos, int):
         result.add(eos)
     vocabulary = tokenizer.get_vocab()
-    if "<|eot_id|>" in vocabulary:
-        result.add(int(vocabulary["<|eot_id|>"]))
+    for marker in ("<|eot_id|>", "<|im_end|>"):
+        if marker in vocabulary:
+            result.add(int(vocabulary[marker]))
     return result
 
 
-def decode_response(tokenizer, response: torch.Tensor) -> tuple[str, int]:
+def decode_response(
+    tokenizer,
+    response: torch.Tensor,
+    until: list[str] | tuple[str, ...] | None = None,
+) -> tuple[str, int]:
     values = [int(value) for value in response.detach().cpu().tolist()]
     stops = stop_token_ids(tokenizer)
     stop = next(
         (index for index, token_id in enumerate(values) if token_id in stops),
         len(values),
     )
-    return tokenizer.decode(values[:stop], skip_special_tokens=True).strip(), stop
+    text = tokenizer.decode(values[:stop], skip_special_tokens=True)
+    for marker in until or ():
+        text = text.split(marker, 1)[0]
+    return text.strip(), stop
 
 
 def region_readiness_from_logits(
@@ -94,8 +102,10 @@ def decode_vanilla(
     device = prompt.device
     synchronize(device)
     started = time.perf_counter()
+    attention_mask = prompt.ne(tokenizer.pad_token_id)
     output = model.diffusion_generate(
         prompt,
+        attention_mask=attention_mask,
         max_new_tokens=int(generation["max_new_tokens"]),
         steps=int(generation["steps"]),
         alg=str(generation["commit_policy"]),
@@ -114,7 +124,9 @@ def decode_vanilla(
     sequences = output.sequences if hasattr(output, "sequences") else output
     nfe = int(reported_nfe) if reported_nfe is not None else int(generation["steps"])
     response = sequences[0, prompt.shape[1] :]
-    text, effective_tokens = decode_response(tokenizer, response)
+    text, effective_tokens = decode_response(
+        tokenizer, response, generation.get("until")
+    )
     canvas_tokens = int(response.numel())
     canvas_tokens_per_second = canvas_tokens / elapsed if elapsed > 0 else None
     effective_tokens_per_second = (
@@ -215,7 +227,9 @@ def decode_mean_field_repro(
     synchronize(device)
     elapsed = time.perf_counter() - started
     response = tokens[0, prompt_length:]
-    text, effective_tokens = decode_response(tokenizer, response)
+    text, effective_tokens = decode_response(
+        tokenizer, response, generation.get("until")
+    )
     canvas_tokens = int(response.numel())
     return {
         "generation": text,
@@ -582,7 +596,9 @@ def decode_regional(
     if diagnostics is not None:
         diagnostics.finalize()
     response = tokens[0, prompt_length:]
-    text, effective_tokens = decode_response(tokenizer, response)
+    text, effective_tokens = decode_response(
+        tokenizer, response, generation.get("until")
+    )
     canvas_tokens = int(response.numel())
     wall_clock_seconds = elapsed_including_diagnostics - diagnostic_seconds
     return {
