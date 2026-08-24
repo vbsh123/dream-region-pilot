@@ -26,7 +26,6 @@ dependencies = [
 [project.optional-dependencies]
 evaluation = [
   "antlr4-python3-runtime==4.11.0",
-  "human-eval @ git+https://github.com/openai/human-eval.git@6d43fb980f9fee3c892a914eda09951f772ad10d",
   "math-verify==0.9.0",
   "sympy==1.14.0",
 ]

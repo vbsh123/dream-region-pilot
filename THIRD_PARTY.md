@@ -14,6 +14,9 @@ This repository does not vendor DAPD or Dream.
 - Official FlowBlock is checked out source-only from
   `Red-EAD/FlowBlock@8f730a2173140792a4324736efdcba27a2bdee75` under its
   Apache-2.0 license. Its code is not imported by the Dream harness.
+- OpenAI HumanEval is imported from a source-only checkout at
+  `openai/human-eval@6d43fb980f9fee3c892a914eda09951f772ad10d` under its MIT
+  license. Its legacy packaging script is not installed.
 
 The Vast dependency versions follow DAPD's pinned public `env.yml` where they
 overlap this minimal pilot.

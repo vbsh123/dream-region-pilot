@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+import sys
 import textwrap
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
+from pathlib import Path
 from typing import Any
 
 from datasets import load_dataset
@@ -148,6 +150,21 @@ def _humaneval_solution(generation: str, source: dict[str, Any]) -> str:
     return prompt + body + "\n"
 
 
+def _humaneval_check_correctness():
+    checkout = Path(__file__).resolve().parents[2] / "external" / "HumanEval"
+    execution = checkout / "human_eval" / "execution.py"
+    if not execution.is_file():
+        raise RuntimeError(
+            "Pinned OpenAI HumanEval source is missing; rerun scripts/setup_vast.sh"
+        )
+    checkout_text = str(checkout)
+    if checkout_text not in sys.path:
+        sys.path.insert(0, checkout_text)
+    from human_eval.execution import check_correctness
+
+    return check_correctness
+
+
 def score_generation(
     data: dict[str, Any],
     generation: str,
@@ -197,13 +214,7 @@ def score_generation(
             )
         if source is None:
             raise ValueError("HumanEval scoring requires the original dataset row")
-        try:
-            from human_eval.execution import check_correctness
-        except ImportError as exc:
-            raise RuntimeError(
-                "HumanEval scoring requires the evaluation extra installed by "
-                "scripts/setup_vast.sh"
-            ) from exc
+        check_correctness = _humaneval_check_correctness()
         problem = {
             "task_id": str(source["task_id"]),
             "prompt": "",

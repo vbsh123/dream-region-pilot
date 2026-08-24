@@ -325,6 +325,7 @@ def main() -> None:
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",
             "HumanEval reports deterministic pass@1 from the official OpenAI tests. Generated Python is executed in a restricted child process; the Vast worker should still be treated as disposable rather than as a security sandbox.",
+            "The OpenAI HumanEval evaluator is imported from the pinned source-only checkout at external/HumanEval; its legacy setup.py is intentionally not installed.",
         ],
     }
     (output_dir / "metadata.json").write_text(

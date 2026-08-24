@@ -10,6 +10,8 @@ DAPD_DIR="external/DAPD"
 DAPD_REVISION="05727b08da4cb4008a275123d7d9885dd5714f7c"
 FLOWBLOCK_DIR="external/FlowBlock"
 FLOWBLOCK_REVISION="8f730a2173140792a4324736efdcba27a2bdee75"
+HUMANEVAL_DIR="external/HumanEval"
+HUMANEVAL_REVISION="6d43fb980f9fee3c892a914eda09951f772ad10d"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
 
 "$PYTHON_BIN" -m venv "$ENV_DIR"
@@ -24,6 +26,15 @@ if [[ ! -d "$DAPD_DIR/.git" ]]; then
 fi
 git -C "$DAPD_DIR" fetch origin "$DAPD_REVISION"
 git -C "$DAPD_DIR" checkout --detach "$DAPD_REVISION"
+
+# Source-only checkout avoids OpenAI HumanEval's legacy setup.py, which imports
+# pkg_resources and fails in modern isolated pip build environments. The pilot
+# imports only its standard-library execution module.
+if [[ ! -d "$HUMANEVAL_DIR/.git" ]]; then
+  git clone https://github.com/openai/human-eval.git "$HUMANEVAL_DIR"
+fi
+git -C "$HUMANEVAL_DIR" fetch origin "$HUMANEVAL_REVISION"
+git -C "$HUMANEVAL_DIR" checkout --detach "$HUMANEVAL_REVISION"
 
 # Source-only checkout for reproducibility. Do not install FlowBlock into this
 # environment: its LLaDA/SGLang stack has different pins and needs ~80 GB VRAM.
