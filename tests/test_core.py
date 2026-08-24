@@ -6,6 +6,7 @@ from dream_region_pilot.benchmarks import (
     prepare_example,
     score_generation,
 )
+from dream_region_pilot.commit import sample_tokens
 from dream_region_pilot.dependencies import (
     aggregate_region_dependencies,
     threshold_region_graph,
@@ -27,6 +28,31 @@ def test_fixed_regions_exclude_prompt_by_construction():
         tuple(range(32, 64)),
         tuple(range(64, 70)),
     ]
+
+
+def test_temperature_sampling_uses_multinomial_and_greedy_numeric_fallback(
+    monkeypatch,
+):
+    logits = torch.tensor([[0.0, 3.0, 1.0]])
+    calls = []
+
+    def failing_multinomial(probabilities, num_samples):
+        calls.append((probabilities, num_samples))
+        raise RuntimeError("invalid multinomial distribution")
+
+    monkeypatch.setattr(torch, "multinomial", failing_multinomial)
+    confidence, predictions = sample_tokens(
+        logits,
+        temperature=0.1,
+        top_p=0.9,
+        top_k=None,
+        policy="entropy",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] == 1
+    assert predictions.tolist() == [1]
+    assert torch.isfinite(confidence).all()
 
 
 def test_asdiv_combines_body_and_question_and_scores_text_or_number():

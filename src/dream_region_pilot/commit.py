@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-import torch.distributions as distributions
 import torch.nn.functional as F
 
 from .regions import Region
@@ -41,8 +40,22 @@ def sample_tokens(
     logits = _filtered_logits(logits, top_p, top_k)
     probabilities = F.softmax(logits, dim=-1)
     if temperature > 0:
-        predictions = distributions.Categorical(probs=probabilities).sample()
-        confidence = probabilities.gather(-1, predictions.unsqueeze(-1)).squeeze(-1)
+        # Match Dream's released sampler.  ``Categorical(probs=...)`` first
+        # normalizes and validates its input as a simplex; for Dream's 152k
+        # vocabulary that validation can reject otherwise sampleable bfloat16
+        # rows because their rounded sum misses the strict simplex tolerance.
+        # ``torch.multinomial`` is the path used by Dream itself and avoids the
+        # extra normalization/validation pass.  Dream falls back to greedy
+        # selection if multinomial sampling is numerically invalid.
+        try:
+            predictions = torch.multinomial(
+                probabilities, num_samples=1
+            ).squeeze(-1)
+            confidence = probabilities.gather(
+                -1, predictions.unsqueeze(-1)
+            ).squeeze(-1)
+        except RuntimeError:
+            confidence, predictions = probabilities.max(dim=-1)
     else:
         confidence, predictions = probabilities.max(dim=-1)
 
