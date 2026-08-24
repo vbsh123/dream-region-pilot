@@ -1,6 +1,10 @@
 import torch
 
-from dream_region_pilot.benchmarks import prepare_example, score_generation
+from dream_region_pilot.benchmarks import (
+    _humaneval_solution,
+    prepare_example,
+    score_generation,
+)
 from dream_region_pilot.dependencies import (
     aggregate_region_dependencies,
     threshold_region_graph,
@@ -37,6 +41,22 @@ def test_asdiv_combines_body_and_question_and_scores_text_or_number():
         {"body": "Ann has more.", "question": "Who?", "answer": "Ann"},
     )
     assert score_generation(data, "#### Ann", categorical.reference_answer)[1]
+
+
+def test_humaneval_full_function_or_body_becomes_complete_solution():
+    source = {
+        "task_id": "HumanEval/0",
+        "prompt": "from typing import List\n\ndef add_one(x: int) -> int:\n    \"\"\"Add one.\"\"\"\n",
+        "entry_point": "add_one",
+    }
+    full = _humaneval_solution(
+        "```python\ndef add_one(x: int) -> int:\n    return x + 1\n```", source
+    )
+    assert full.startswith("from typing import List")
+    assert "def add_one" in full
+    assert "    return x + 1" in full
+    body = _humaneval_solution("return x + 1", source)
+    assert body.endswith("    return x + 1\n")
 
 
 def test_region_aggregators_and_positional_orientation():

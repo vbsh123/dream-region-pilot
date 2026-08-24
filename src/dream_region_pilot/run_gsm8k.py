@@ -274,7 +274,7 @@ def main() -> None:
                         probe=probe_config,
                     )
                 prediction, correct, scoring_method = score_generation(
-                    config["data"], generated["generation"], reference
+                    config["data"], generated["generation"], reference, source
                 )
                 row = {
                     "example_index": example_index,
@@ -324,6 +324,7 @@ def main() -> None:
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",
+            "HumanEval reports deterministic pass@1 from the official OpenAI tests. Generated Python is executed in a restricted child process; the Vast worker should still be treated as disposable rather than as a security sandbox.",
         ],
     }
     (output_dir / "metadata.json").write_text(

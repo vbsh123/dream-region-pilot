@@ -92,6 +92,21 @@ bash scripts/run_reasoning_task_50.sh configs/math500_50.yaml \
   outputs/math500_expanded_50
 ```
 
+The focused region-balance attribution can be run identically on GSM8K and
+HumanEval:
+
+```bash
+bash scripts/run_balanced_attribution_50.sh configs/gsm8k_50.yaml \
+  outputs/gsm8k_balanced_attribution_50
+bash scripts/run_balanced_attribution_50.sh configs/humaneval_50.yaml \
+  outputs/humaneval_balanced_attribution_50
+```
+
+HumanEval uses the official OpenAI tests and deterministic pass@1. It executes
+model-generated Python in a time-limited child process with the evaluator's
+reliability guard. That guard is not a security sandbox: run this benchmark
+only on a disposable Vast worker without secrets or trusted writable data.
+
 MATH-500 uses `math-verify==0.9.0`, matching FlowBlock's pinned evaluator
 dependency. ASDiv uses normalized numeric/fraction comparison when the gold is
 numeric and normalized final-text comparison for its categorical answers.
