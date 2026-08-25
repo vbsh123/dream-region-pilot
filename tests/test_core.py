@@ -6,7 +6,11 @@ from dream_region_pilot.benchmarks import (
     prepare_example,
     score_generation,
 )
-from dream_region_pilot.commit import commit_active_regions, sample_tokens
+from dream_region_pilot.commit import (
+    commit_active_regions,
+    describe_commitments,
+    sample_tokens,
+)
 from dream_region_pilot.dependencies import (
     aggregate_region_dependencies,
     threshold_region_graph,
@@ -53,6 +57,46 @@ def test_temperature_sampling_uses_multinomial_and_greedy_numeric_fallback(
     assert calls[0][1] == 1
     assert predictions.tolist() == [1]
     assert torch.isfinite(confidence).all()
+
+
+def test_commitment_diagnostics_report_raw_and_sampling_top_two():
+    mask = 99
+    tokens = torch.tensor([[mask, mask]])
+    logits = torch.tensor(
+        [[[1.0, 5.0, 0.0], [4.0, 1.0, 0.0]]], dtype=torch.float32
+    )
+    regions = build_fixed_regions(2, 1)
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask,
+        regions=regions,
+        local_steps=1,
+        eps=1e-3,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=None,
+    )
+    details = describe_commitments(
+        logits,
+        tokens,
+        prompt_length=0,
+        regions=regions,
+        committed=committed,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+    )
+
+    assert [item["token_id"] for item in details] == [1, 0]
+    assert [item["raw_top1_token_id"] for item in details] == [1, 0]
+    assert [item["raw_top2_token_id"] for item in details] == [0, 1]
+    assert all(item["raw_chosen_probability"] > 0.9 for item in details)
+    assert all(item["raw_region_confidence_rank"] == 1 for item in details)
 
 
 def test_asdiv_combines_body_and_question_and_scores_text_or_number():
@@ -405,6 +449,7 @@ def test_summary_reports_measured_throughput_and_vanilla_speedups():
     assert controlled["mean_tokens_committed_per_forward"] == 256 / 50
     assert controlled["canvas_tokens_per_second"] == 256 / 5
     assert controlled["effective_tokens_per_second"] == 80 / 5
+    assert controlled["mean_effective_generated_tokens"] == 80
     assert controlled["nfe_speedup_vs_vanilla"] == 2.0
     assert controlled["wall_clock_speedup_vs_vanilla"] == 2.0
     assert controlled["canvas_tps_speedup_vs_vanilla"] == 2.0

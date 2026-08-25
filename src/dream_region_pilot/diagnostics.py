@@ -149,6 +149,7 @@ class ExampleDiagnostics:
         scheduled: list[int],
         advanced: list[int],
         committed: dict[int, list[int]],
+        commitment_details: list[dict[str, Any]],
         edges: list[dict[str, float | int]],
         admitted_region_count: int,
         newly_admitted: list[int],
@@ -161,6 +162,7 @@ class ExampleDiagnostics:
                 "scheduled_regions": scheduled,
                 "advanced_regions": advanced,
                 "committed_response_positions": committed,
+                "commitment_details": commitment_details,
                 "committed_count": sum(len(values) for values in committed.values()),
                 "admitted_region_count": admitted_region_count,
                 "newly_admitted_regions": newly_admitted,
@@ -191,6 +193,17 @@ class ExampleDiagnostics:
         (self.output_dir / "graph_timeline.json").write_text(
             json.dumps(self.graph_snapshots, indent=2) + "\n", encoding="utf-8"
         )
+        with (self.output_dir / "commitments.jsonl").open(
+            "w", encoding="utf-8"
+        ) as handle:
+            for step in self.iterations:
+                for detail in step["commitment_details"]:
+                    handle.write(
+                        json.dumps(
+                            {"iteration": step["iteration"], **detail}
+                        )
+                        + "\n"
+                    )
         self._write_clock_csv()
         self._write_graph_metrics_csv()
         self._plot_clocks_and_masks()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 import torch.nn.functional as F
 
@@ -202,3 +204,176 @@ def commit_active_regions(
                 int(position.item()) for position in selected_in_region
             ]
     return committed
+
+
+@torch.no_grad()
+def describe_commitments(
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    *,
+    prompt_length: int,
+    regions: list[Region],
+    committed: dict[int, list[int]],
+    temperature: float,
+    top_p: float | None,
+    top_k: int | None,
+    policy: str,
+) -> list[dict[str, Any]]:
+    """Describe committed tokens without changing decoding behavior.
+
+    Raw probabilities are computed from the model logits before temperature or
+    top-p/top-k filtering.  Sampling probabilities reproduce the distribution
+    used by ``sample_tokens``.  The latter is also the source of the entropy or
+    margin score used to rank commitments under Dream's ordinary policy.
+
+    This function is called only for explicitly requested diagnostic examples.
+    Keeping it outside ``commit_active_regions`` makes its extra work easy to
+    time and exclude from reported decoding latency.
+    """
+    selected: list[tuple[int, int]] = [
+        (int(region_index), int(position))
+        for region_index, positions in committed.items()
+        for position in positions
+    ]
+    if not selected:
+        return []
+
+    device = logits.device
+    response_logits = logits[0, prompt_length:].float()
+    selected_relative = torch.tensor(
+        [position for _, position in selected], dtype=torch.long, device=device
+    )
+    selected_logits = response_logits.index_select(0, selected_relative)
+
+    raw_log_normalizer = torch.logsumexp(selected_logits, dim=-1)
+    raw_top_logits, raw_top_ids = torch.topk(selected_logits, k=2, dim=-1)
+    raw_top_probabilities = (
+        raw_top_logits - raw_log_normalizer.unsqueeze(-1)
+    ).exp()
+    chosen_ids = tokens[0, selected_relative + prompt_length].long()
+    raw_chosen_probability = (
+        selected_logits.gather(1, chosen_ids.unsqueeze(-1)).squeeze(-1)
+        - raw_log_normalizer
+    ).exp()
+    raw_log_probabilities = selected_logits - raw_log_normalizer.unsqueeze(-1)
+    raw_probabilities = raw_log_probabilities.exp()
+    raw_entropy = -(
+        raw_probabilities * raw_log_probabilities
+    ).sum(dim=-1)
+
+    sampling_logits = selected_logits
+    if temperature > 0:
+        sampling_logits = sampling_logits / temperature
+    sampling_logits = _filtered_logits(sampling_logits, top_p, top_k)
+    sampling_log_probabilities = F.log_softmax(sampling_logits, dim=-1)
+    sampling_probabilities = sampling_log_probabilities.exp()
+    sampling_top_probabilities, sampling_top_ids = torch.topk(
+        sampling_probabilities, k=2, dim=-1
+    )
+    sampling_chosen_probability = sampling_probabilities.gather(
+        1, chosen_ids.unsqueeze(-1)
+    ).squeeze(-1)
+    sampling_entropy = -(
+        sampling_probabilities * sampling_log_probabilities
+    ).sum(dim=-1)
+
+    # Rank by the standard, untempered top-1 confidence.  This is the quantity
+    # used by the readiness gate and is the most useful value for testing a
+    # future Fast-dLLM-style confidence veto.
+    all_raw_confidence = (
+        response_logits.max(dim=-1).values
+        - torch.logsumexp(response_logits, dim=-1)
+    ).exp()
+    region_by_index = {region.index: region for region in regions}
+    global_candidates = torch.tensor(
+        [
+            position
+            for region in regions
+            for position in region.remaining_mask_indices
+        ],
+        dtype=torch.long,
+        device=device,
+    )
+    global_scores = all_raw_confidence.index_select(0, global_candidates)
+
+    details: list[dict[str, Any]] = []
+    for row, (region_index, response_position) in enumerate(selected):
+        region = region_by_index[region_index]
+        region_candidates = torch.tensor(
+            region.remaining_mask_indices, dtype=torch.long, device=device
+        )
+        region_scores = all_raw_confidence.index_select(0, region_candidates)
+        confidence = raw_top_probabilities[row, 0]
+        if policy == "entropy":
+            selection_score = -sampling_entropy[row]
+        elif policy == "topk_margin":
+            selection_score = (
+                sampling_top_probabilities[row, 0]
+                - sampling_top_probabilities[row, 1]
+            )
+        else:
+            selection_score = sampling_chosen_probability[row]
+        details.append(
+            {
+                "region": region_index,
+                "response_position": response_position,
+                "absolute_position": response_position + prompt_length,
+                "token_id": int(chosen_ids[row].item()),
+                "raw_chosen_probability": float(
+                    raw_chosen_probability[row].item()
+                ),
+                "raw_top1_token_id": int(raw_top_ids[row, 0].item()),
+                "raw_top1_probability": float(
+                    raw_top_probabilities[row, 0].item()
+                ),
+                "raw_top2_token_id": int(raw_top_ids[row, 1].item()),
+                "raw_top2_probability": float(
+                    raw_top_probabilities[row, 1].item()
+                ),
+                "raw_chosen_is_top1": bool(
+                    chosen_ids[row].item() == raw_top_ids[row, 0].item()
+                ),
+                "raw_top1_top2_margin": float(
+                    (
+                        raw_top_probabilities[row, 0]
+                        - raw_top_probabilities[row, 1]
+                    ).item()
+                ),
+                "raw_entropy": float(raw_entropy[row].item()),
+                "sampling_chosen_probability": float(
+                    sampling_chosen_probability[row].item()
+                ),
+                "sampling_top1_token_id": int(
+                    sampling_top_ids[row, 0].item()
+                ),
+                "sampling_top1_probability": float(
+                    sampling_top_probabilities[row, 0].item()
+                ),
+                "sampling_top2_token_id": int(
+                    sampling_top_ids[row, 1].item()
+                ),
+                "sampling_top2_probability": float(
+                    sampling_top_probabilities[row, 1].item()
+                ),
+                "sampling_chosen_is_top1": bool(
+                    chosen_ids[row].item() == sampling_top_ids[row, 0].item()
+                ),
+                "sampling_entropy": float(sampling_entropy[row].item()),
+                "policy": policy,
+                "policy_selection_score": float(selection_score.item()),
+                "raw_global_confidence_rank": int(
+                    (global_scores > confidence).sum().item()
+                )
+                + 1,
+                "raw_global_candidate_count": int(global_scores.numel()),
+                "raw_region_confidence_rank": int(
+                    (region_scores > confidence).sum().item()
+                )
+                + 1,
+                "raw_region_candidate_count": int(region_scores.numel()),
+                "region_clock_before": region.clock,
+                "region_schedule_step_before": region.schedule_step,
+                "region_commit_count": len(committed[region_index]),
+            }
+        )
+    return details

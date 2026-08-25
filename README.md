@@ -261,6 +261,39 @@ Inspect each strategy's `region_state.csv`: `progress_tokens`, `blocked`, and
 `urgent` expose every control decision. The result row also contains the full
 `control_timeline` and final persistent edge set.
 
+### Commitment-confidence audit
+
+Diagnostic regional runs also write `commitments.jsonl`. Each committed token
+records its response position and region, chosen token, raw untempered top-1
+and top-2 probabilities, chosen-token probability, entropy, sampling
+distribution statistics, and confidence rank within its region and across the
+currently masked canvas. Diagnostic computation is synchronized, timed
+separately, and excluded from reported decoding wall time.
+
+Rerun only the vanilla-correct / controlled-position-wrong GSM8K examples:
+
+```bash
+python -m dream_region_pilot.run_gsm8k \
+  --config configs/gsm8k_cot_official_50.yaml \
+  --output-dir outputs/gsm8k_controlled_position_confidence_audit \
+  --example-indices 3 4 6 9 10 17 28 30 41 45 46 47 \
+  --strategies controlled_position \
+  --diagnostic-examples 12 \
+  --diagnostic-snapshot-interval 4
+```
+
+For example 41, inspect its least-confident visible commitments with:
+
+```bash
+effective=$(jq -r 'select(.example_index == 41) | .effective_generated_tokens' \
+  outputs/gsm8k_controlled_position_confidence_audit/results.jsonl)
+jq -s --argjson effective "$effective" '
+  [.[] | select(.response_position < $effective)]
+  | sort_by(.raw_top1_probability)
+  | .[:20]
+' outputs/gsm8k_controlled_position_confidence_audit/diagnostics/example_041/controlled_position/commitments.jsonl
+```
+
 The aggressive `wavefront_probe` is a diagnostic ablation, not the speed or
 accuracy baseline for the 50-example run. Its two-example result is useful for
 showing that a 15% gate can fail, but it should not be presented as FlowBlock.
@@ -403,7 +436,8 @@ aggregators), `--dependency-matrix`, `--dependency-threshold`,
   timing, canvas/effective TPS, dependency-cost, clock, and graph-density
   measurements.
 - `summary.csv` and `summary.json`: accuracy, NFE, aggregate canvas/effective
-  TPS, wall time, and vanilla-relative NFE/wall/TPS speedups for every mode.
+  TPS, mean pre-EOS output length, wall time, and vanilla-relative
+  NFE/wall/TPS speedups for every mode.
 - `metadata.json`: resolved model commit when exposed by Transformers, pinned
   DAPD revision, complete config, and interpretation notes.
 - `diagnostics/example_*/async_lag*/`: full raw/normalized token dependency

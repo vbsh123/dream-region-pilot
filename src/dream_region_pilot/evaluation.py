@@ -68,6 +68,9 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 ),
                 "total_canvas_tokens": total_canvas_tokens,
                 "total_effective_generated_tokens": total_effective_tokens,
+                "mean_effective_generated_tokens": (
+                    total_effective_tokens / count
+                ),
                 "total_generated_tokens": total_effective_tokens,
                 "total_wall_clock_seconds": total_wall_clock,
                 "mean_wall_clock_seconds": total_wall_clock / count,

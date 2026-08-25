@@ -7,7 +7,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from .commit import commit_active_regions
+from .commit import commit_active_regions, describe_commitments
 from .dependencies import DAPDDreamAdapter, graph_summary, make_dependency_snapshot
 from .diagnostics import ExampleDiagnostics
 from .mean_field import mean_field_commit_indices, topk_tail_jsd_dependency
@@ -553,6 +553,34 @@ def decode_regional(
             alg_temp=generation.get("alg_temp"),
             region_groups=commit_groups,
         )
+        commitment_details: list[dict[str, Any]] = []
+        if diagnostics is not None:
+            synchronize(device)
+            diagnostic_started = time.perf_counter()
+            commitment_details = describe_commitments(
+                logits,
+                tokens,
+                prompt_length=prompt_length,
+                regions=regions,
+                committed=committed,
+                temperature=float(generation.get("temperature", 0.0)),
+                top_p=generation.get("top_p"),
+                top_k=generation.get("top_k"),
+                policy=str(generation["commit_policy"]),
+            )
+            for detail in commitment_details:
+                for key in (
+                    "token_id",
+                    "raw_top1_token_id",
+                    "raw_top2_token_id",
+                    "sampling_top1_token_id",
+                    "sampling_top2_token_id",
+                ):
+                    detail[key.removesuffix("_id")] = (
+                        tokenizer.convert_ids_to_tokens(detail[key])
+                    )
+            synchronize(device)
+            diagnostic_seconds += time.perf_counter() - diagnostic_started
         advanced = scheduler.apply_updates(active, committed)
         tokens_committed_per_forward.append(sum(len(value) for value in committed.values()))
         refresh_remaining_masks(
@@ -599,6 +627,7 @@ def decode_regional(
                 scheduled=[region.index for region in active],
                 advanced=[region.index for region in advanced],
                 committed=committed,
+                commitment_details=commitment_details,
                 edges=latest_snapshot.edges if latest_snapshot is not None else [],
                 admitted_region_count=scheduler.admitted_count,
                 newly_admitted=newly_admitted,
