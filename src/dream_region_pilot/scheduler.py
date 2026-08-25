@@ -27,6 +27,7 @@ class RegionScheduler:
             "loose_wavefront",
             "flowblock_proxy",
             "controlled_position",
+            "controlled_position_tail_guard",
             "controlled_dapd",
             "controlled_jsd",
             "controlled_combo",
@@ -61,6 +62,7 @@ class RegionScheduler:
             "loose_wavefront",
             "flowblock_proxy",
             "controlled_position",
+            "controlled_position_tail_guard",
             "controlled_dapd",
             "controlled_jsd",
             "controlled_combo",
@@ -121,11 +123,20 @@ class RegionScheduler:
         for region in self.regions:
             region.parents = set(parents.get(region.index, set()))
 
-    def regions_allowed_to_advance(self, local_steps: int) -> list[Region]:
+    def regions_allowed_to_advance(
+        self,
+        local_steps: int,
+        *,
+        max_region_exclusive: int | None = None,
+    ) -> list[Region]:
         unfinished = [
             region
             for region in self.regions
             if not region.done and region.schedule_step < local_steps
+            and (
+                max_region_exclusive is None
+                or region.index < max_region_exclusive
+            )
         ]
         if self.mode == "always_on":
             return unfinished
@@ -266,6 +277,7 @@ def parse_strategy(name: str) -> tuple[str, int]:
         "loose_wavefront",
         "flowblock_proxy",
         "controlled_position",
+        "controlled_position_tail_guard",
         "controlled_dapd",
         "controlled_jsd",
         "controlled_combo",

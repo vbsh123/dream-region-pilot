@@ -92,6 +92,31 @@ def region_readiness_from_logits(
     return readiness
 
 
+def predicted_tail_region(
+    logits: torch.Tensor,
+    *,
+    prompt_length: int,
+    response_mask: torch.Tensor,
+    regions,
+    stop_ids: set[int],
+) -> int | None:
+    """Return the region containing the earliest masked top-1 stop prediction."""
+    if not stop_ids:
+        return None
+    predictions = logits[0, prompt_length:].argmax(dim=-1)
+    is_stop = torch.zeros_like(predictions, dtype=torch.bool)
+    for token_id in stop_ids:
+        is_stop |= predictions == token_id
+    candidates = torch.nonzero(response_mask[0] & is_stop, as_tuple=False)
+    if candidates.numel() == 0:
+        return None
+    position = int(candidates[0, 0].item())
+    for region in regions:
+        if region.token_indices[0] <= position <= region.token_indices[-1]:
+            return region.index
+    raise RuntimeError(f"Predicted tail position {position} is outside all regions")
+
+
 @torch.no_grad()
 def decode_vanilla(
     model,
@@ -289,6 +314,7 @@ def decode_regional(
     if local_steps <= 0:
         raise ValueError("local_steps must be positive")
     mask_id = mask_token_id(model, tokenizer)
+    termination_ids = stop_token_ids(tokenizer)
     tokens = F.pad(prompt, (0, generation_length), value=mask_id)
     regions = build_fixed_regions(generation_length, region_size)
     refresh_remaining_masks(regions, [True] * generation_length)
@@ -375,6 +401,7 @@ def decode_regional(
     tokens_committed_per_forward: list[int] = []
     admission_events: list[dict[str, Any]] = []
     control_timeline: list[dict[str, Any]] = []
+    tail_guard_timeline: list[dict[str, Any]] = []
 
     synchronize(device)
     started = time.perf_counter()
@@ -529,7 +556,24 @@ def decode_regional(
             else {}
         )
 
-        active = scheduler.regions_allowed_to_advance(local_steps)
+        provisional_tail = None
+        guarded_tail = None
+        if mode == "controlled_position_tail_guard":
+            provisional_tail = predicted_tail_region(
+                logits,
+                prompt_length=prompt_length,
+                response_mask=response_mask,
+                regions=regions,
+                stop_ids=termination_ids,
+            )
+            if provisional_tail is not None and any(
+                not region.done for region in regions[:provisional_tail]
+            ):
+                guarded_tail = provisional_tail
+        active = scheduler.regions_allowed_to_advance(
+            local_steps,
+            max_region_exclusive=guarded_tail,
+        )
         if not active:
             clocks = {region.index: region.clock for region in regions}
             raise RuntimeError(
@@ -616,9 +660,19 @@ def decode_regional(
                 [region.index for region in group]
                 for group in commit_groups
             ],
+            "predicted_tail_region": provisional_tail,
+            "guarded_tail_region": guarded_tail,
         }
         if scheduler.is_controlled:
             control_timeline.append(control_state)
+        if mode == "controlled_position_tail_guard":
+            tail_guard_timeline.append(
+                {
+                    "iteration": nfe,
+                    "predicted_tail_region": provisional_tail,
+                    "guarded_tail_region": guarded_tail,
+                }
+            )
         if diagnostics is not None:
             diagnostic_started = time.perf_counter()
             diagnostics.record_iteration(
@@ -697,6 +751,11 @@ def decode_regional(
             strategy_probe.get("readiness_confidence_threshold", 0.5)
         ),
         "control_timeline": control_timeline,
+        "tail_guard_timeline": tail_guard_timeline,
+        "iterations_with_tail_guard": sum(
+            item["guarded_tail_region"] is not None
+            for item in tail_guard_timeline
+        ),
         "iterations_with_blocking": sum(
             bool(item["blocked_regions"]) for item in control_timeline
         ),
@@ -748,7 +807,11 @@ def decode_regional(
                             else (
                                 "positional_bounded_progress_skew"
                                 if mode == "controlled_position"
-                                else "per_region_linear_time"
+                                else (
+                                    "predicted_terminal_region_guard_plus_positional_bounded_skew"
+                                    if mode == "controlled_position_tail_guard"
+                                    else "per_region_linear_time"
+                                )
                             )
                         )
                     )

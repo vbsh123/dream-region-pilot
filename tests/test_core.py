@@ -16,6 +16,7 @@ from dream_region_pilot.dependencies import (
     threshold_region_graph,
 )
 from dream_region_pilot.evaluation import summarize
+from dream_region_pilot.decoding import predicted_tail_region
 from dream_region_pilot.regions import build_fixed_regions
 from dream_region_pilot.scheduler import RegionScheduler, parse_strategy
 from dream_region_pilot.mean_field import (
@@ -214,6 +215,10 @@ def test_new_comparison_strategy_names_parse_without_changing_mode():
     assert parse_strategy("flowblock_proxy") == ("flowblock_proxy", 0)
     assert parse_strategy("loose_wavefront") == ("loose_wavefront", 0)
     assert parse_strategy("controlled_position") == ("controlled_position", 0)
+    assert parse_strategy("controlled_position_tail_guard") == (
+        "controlled_position_tail_guard",
+        0,
+    )
     assert parse_strategy("controlled_dapd_dynamic") == (
         "controlled_dapd_dynamic",
         0,
@@ -297,6 +302,42 @@ def test_position_control_uses_only_adjacent_edges():
     ] == [0, 1, 2]
     assert scheduler.last_control_edges == {(0, 1), (1, 2)}
     assert scheduler.active_dependency_edges == set()
+
+
+def test_tail_guard_can_exclude_provisional_tail_without_blocking_parent():
+    regions = build_fixed_regions(12, 4)
+    scheduler = RegionScheduler(
+        regions,
+        mode="controlled_position_tail_guard",
+        max_active_regions=3,
+        max_progress_gap=1,
+    )
+    scheduler.admitted_count = 3
+    regions[0].remaining_mask_indices = ()
+    regions[1].remaining_mask_indices = (7,)
+    assert [
+        region.index
+        for region in scheduler.regions_allowed_to_advance(
+            4, max_region_exclusive=2
+        )
+    ] == [1]
+
+
+def test_predicted_tail_region_uses_earliest_masked_stop():
+    regions = build_fixed_regions(8, 4)
+    logits = torch.zeros((1, 10, 5))
+    logits[0, 6, 4] = 3.0  # response position 4, in R1
+    logits[0, 3, 4] = 4.0  # response position 1, but already revealed
+    response_mask = torch.tensor(
+        [[True, False, True, True, True, True, True, True]]
+    )
+    assert predicted_tail_region(
+        logits,
+        prompt_length=2,
+        response_mask=response_mask,
+        regions=regions,
+        stop_ids={4},
+    ) == 1
 
 
 def test_dependency_edge_requires_real_progress_and_two_observations():

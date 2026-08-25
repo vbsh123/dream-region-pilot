@@ -106,6 +106,11 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     int(row.get("iterations_with_blocking", 0)) for row in selected
                 )
                 / count,
+                "mean_iterations_with_tail_guard": sum(
+                    int(row.get("iterations_with_tail_guard", 0))
+                    for row in selected
+                )
+                / count,
                 "mean_blocked_region_events": sum(
                     int(row.get("blocked_region_events", 0)) for row in selected
                 )

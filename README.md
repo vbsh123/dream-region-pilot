@@ -240,6 +240,8 @@ flowblock_proxy       W=2 and 60% readiness admission proxy
 loose_wavefront       W=8 and 15% readiness, no graph/backpressure
 mean_field_repro      published Mean-Field commit algorithm reproduction
 controlled_position   W=8 positional bounded skew, no dynamic graph
+controlled_position_tail_guard
+                      same controller, provisional terminal region deferred
 controlled_dapd       persistent DAPD edges
 controlled_jsd        persistent Mean-Field/JSD mean edges
 controlled_combo      persistent DAPD ∩ JSD edges
@@ -251,6 +253,14 @@ is paused if it reveals more tokens than its parent; a parent is paused only
 when its lead exceeds eight tokens. The lagging endpoint then receives its
 ordinary next Dream local update. No extra token is forced, and a zero-token
 update does not count as progress.
+
+`controlled_position_tail_guard` is a deliberately coarse termination
+ablation. On every forward it finds the earliest still-masked position whose
+top-1 prediction is a stop token. While any earlier fixed region is unfinished,
+the region containing that position and all later regions receive no forced
+local update. The guard is removed once the earlier regions finish. This uses
+only current model predictions; it does not use the reference answer or a
+vanilla generation to infer response length.
 
 The all-mask graph cannot control scheduling. A dependency edge activates only
 after both endpoints have revealed at least one token and it appears in two
