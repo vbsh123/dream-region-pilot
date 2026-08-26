@@ -171,6 +171,7 @@ def main() -> None:
     allowed = set(VANILLA_STEP_OVERRIDES) | {
         "fixed_sequential",
         "always_on",
+        "always_on_tail_guard",
         "async_lag0",
         "async_lag1",
         "async_lag2",
@@ -261,6 +262,7 @@ def main() -> None:
                 diagnostics_dir = None
                 if run_position < diagnostics_count and (
                     strategy.startswith("async_")
+                    or strategy in {"always_on", "always_on_tail_guard"}
                     or strategy == "wavefront_probe"
                     or strategy == "loose_wavefront"
                     or strategy == "flowblock_proxy"
@@ -366,6 +368,7 @@ def main() -> None:
             "Dynamic component merges and splits preserve each fixed region's revealed tokens, schedule cursor, and real-progress clock; no synthetic clock progress or equalization is introduced.",
             "controlled_position uses the identical admission and bounded-skew controller without dynamic DAPD/JSD edges, isolating whether graph control helps beyond positional staggering.",
             "controlled_position_tail_guard is a coarse terminal-region ablation: while an earlier fixed region remains unfinished, it withholds the region containing the earliest currently masked top-1 stop-token prediction and every later region from forced progress.",
+            "always_on_tail_guard applies the same coarse terminal-region guard with all regions admitted from iteration zero and no positional or dependency backpressure.",
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",

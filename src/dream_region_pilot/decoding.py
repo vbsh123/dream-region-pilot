@@ -558,7 +558,10 @@ def decode_regional(
 
         provisional_tail = None
         guarded_tail = None
-        if mode == "controlled_position_tail_guard":
+        if mode in {
+            "always_on_tail_guard",
+            "controlled_position_tail_guard",
+        }:
             provisional_tail = predicted_tail_region(
                 logits,
                 prompt_length=prompt_length,
@@ -665,7 +668,10 @@ def decode_regional(
         }
         if scheduler.is_controlled:
             control_timeline.append(control_state)
-        if mode == "controlled_position_tail_guard":
+        if mode in {
+            "always_on_tail_guard",
+            "controlled_position_tail_guard",
+        }:
             tail_guard_timeline.append(
                 {
                     "iteration": nfe,
@@ -810,7 +816,11 @@ def decode_regional(
                                 else (
                                     "predicted_terminal_region_guard_plus_positional_bounded_skew"
                                     if mode == "controlled_position_tail_guard"
-                                    else "per_region_linear_time"
+                                    else (
+                                        "predicted_terminal_region_guard_plus_always_on_regions"
+                                        if mode == "always_on_tail_guard"
+                                        else "per_region_linear_time"
+                                    )
                                 )
                             )
                         )

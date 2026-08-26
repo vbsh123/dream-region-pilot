@@ -212,6 +212,10 @@ def test_flowblock_proxy_uses_a_two_region_active_window():
 
 
 def test_new_comparison_strategy_names_parse_without_changing_mode():
+    assert parse_strategy("always_on_tail_guard") == (
+        "always_on_tail_guard",
+        0,
+    )
     assert parse_strategy("flowblock_proxy") == ("flowblock_proxy", 0)
     assert parse_strategy("loose_wavefront") == ("loose_wavefront", 0)
     assert parse_strategy("controlled_position") == ("controlled_position", 0)
@@ -321,6 +325,20 @@ def test_tail_guard_can_exclude_provisional_tail_without_blocking_parent():
             4, max_region_exclusive=2
         )
     ] == [1]
+
+
+def test_always_on_tail_guard_has_no_admission_or_backpressure():
+    regions = build_fixed_regions(12, 4)
+    scheduler = RegionScheduler(regions, mode="always_on_tail_guard")
+    assert scheduler.admitted_count == 3
+    assert [
+        region.index
+        for region in scheduler.regions_allowed_to_advance(
+            4, max_region_exclusive=2
+        )
+    ] == [0, 1]
+    assert scheduler.last_control_edges == set()
+    assert scheduler.last_blocked_regions == set()
 
 
 def test_predicted_tail_region_uses_earliest_masked_stop():

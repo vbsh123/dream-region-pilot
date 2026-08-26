@@ -22,6 +22,7 @@ class RegionScheduler:
         valid = {
             "fixed_sequential",
             "always_on",
+            "always_on_tail_guard",
             "fixed_lag",
             "wavefront_probe",
             "loose_wavefront",
@@ -138,7 +139,7 @@ class RegionScheduler:
                 or region.index < max_region_exclusive
             )
         ]
-        if self.mode == "always_on":
+        if self.mode in {"always_on", "always_on_tail_guard"}:
             return unfinished
         if self.mode == "fixed_sequential":
             return unfinished[:1]
@@ -273,6 +274,7 @@ def parse_strategy(name: str) -> tuple[str, int]:
     if name in {
         "fixed_sequential",
         "always_on",
+        "always_on_tail_guard",
         "wavefront_probe",
         "loose_wavefront",
         "flowblock_proxy",

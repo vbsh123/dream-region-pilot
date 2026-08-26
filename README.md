@@ -262,6 +262,22 @@ local update. The guard is removed once the earlier regions finish. This uses
 only current model predictions; it does not use the reference answer or a
 vanilla generation to infer response length.
 
+`always_on_tail_guard` applies that identical termination rule without a
+wavefront: all eight regions start on iteration zero, with no readiness
+admission and no positional or dependency backpressure. Only a provisional
+tail region and the regions after it can be paused.
+
+Run the complete 164-task HumanEval split with paired baselines:
+
+```bash
+python -m dream_region_pilot.run_gsm8k \
+  --config configs/humaneval_50.yaml \
+  --output-dir outputs/humaneval_164_always_on_tail \
+  --limit 164 \
+  --strategies vanilla always_on always_on_tail_guard \
+  --diagnostic-examples 0
+```
+
 The all-mask graph cannot control scheduling. A dependency edge activates only
 after both endpoints have revealed at least one token and it appears in two
 consecutive `K=4` snapshots; removal likewise requires two misses. Immediate
