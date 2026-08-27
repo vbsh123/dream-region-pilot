@@ -369,6 +369,31 @@ def test_regional_dawn_fallback_is_scoped_to_active_region():
     assert stats[0]["fallback"] is True
 
 
+def test_regional_dawn_thresholds_use_untempered_confidence():
+    region = build_fixed_regions(1, 1)[0]
+    mask_id = 2
+    tokens = torch.tensor([[mask_id]])
+    # Raw top-1 probability is about 0.73, whereas temperature 0.1 would make
+    # it almost one. DAWN's 0.9 threshold must therefore miss and use fallback.
+    logits = torch.tensor([[[1.0, 0.0, -10.0]]])
+    stats = []
+    commit_active_regions_dawn(
+        tokens,
+        logits,
+        torch.zeros((1, 1, 1)),
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=[region],
+        temperature=0.1,
+        top_p=0.9,
+        top_k=None,
+        dawn_config={},
+        selector_stats=stats,
+    )
+    assert stats[0]["confident"] == 0
+    assert stats[0]["fallback"] is True
+
+
 def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():
     logits = torch.tensor(
         [[[8.0, 0.0, 0.0], [8.0, 0.0, 0.0], [0.0, 8.0, 0.0]]]

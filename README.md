@@ -327,7 +327,10 @@ python -m dream_region_pilot.run_gsm8k \
 
 The default DAWN thresholds are its released Dream GSM8K values: sink 0.03,
 edge 0.10, induced-token confidence 0.75, conflict-candidate confidence 0.80,
-and direct high confidence 0.90. Each is exposed as a `--dawn-*` flag.
+and direct high confidence 0.90. Each is exposed as a `--dawn-*` flag. These
+thresholds are applied to raw, untempered probabilities, matching DAWN's
+released temperature-zero setting; token predictions retain the pilot's
+configured Dream sampler for a clean selector ablation.
 
 Run the intended coupled smoke test with a 0.4 confidence gate and four-token
 progress gap:

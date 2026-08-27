@@ -445,15 +445,24 @@ def commit_active_regions_dawn(
     if deferral_confidence_threshold is not None and region_deferral_counts is None:
         raise ValueError("region_deferral_counts is required when deferral is enabled")
 
-    # DAWN samples predictions and uses their probability as confidence; it
-    # does not use Dream's entropy ranking policy for this selector.
-    confidence, predictions = sample_tokens(
+    # Preserve the experiment's Dream prediction sampler, but evaluate DAWN's
+    # released thresholds on raw, untempered model probabilities.  DAWN's
+    # released Dream commands use temperature=0 and no top-p filtering; using
+    # this pilot's temperature=0.1 probabilities would divide logits by 0.1,
+    # make almost every distribution artificially sharp, and collapse the
+    # regional decoder to a handful of forwards.
+    _, predictions = sample_tokens(
         logits[0],
         temperature=temperature,
         top_p=top_p,
         top_k=top_k,
         policy="maskgit_plus",
     )
+    raw_logits = logits[0].float()
+    raw_maximum = raw_logits.max(dim=-1).values
+    confidence = (
+        raw_maximum - torch.logsumexp(raw_logits, dim=-1)
+    ).exp()
     mask_index = tokens[0] == mask_token_id
     committed: dict[int, list[int]] = {region.index: [] for region in regions}
 
