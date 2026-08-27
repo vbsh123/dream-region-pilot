@@ -111,6 +111,21 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     for row in selected
                 )
                 / count,
+                "mean_iterations_with_deferral": sum(
+                    int(row.get("iterations_with_deferral", 0))
+                    for row in selected
+                )
+                / count,
+                "mean_deferred_region_events": sum(
+                    int(row.get("deferred_region_events", 0))
+                    for row in selected
+                )
+                / count,
+                "mean_forced_region_events": sum(
+                    int(row.get("forced_region_events", 0))
+                    for row in selected
+                )
+                / count,
                 "mean_blocked_region_events": sum(
                     int(row.get("blocked_region_events", 0)) for row in selected
                 )

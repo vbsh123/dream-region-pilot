@@ -34,6 +34,15 @@ def load_config(path: Path) -> dict[str, Any]:
             value = float(probe.get(key, 0.0))
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"probe.{key} must be in [0, 1]")
+        deferral_threshold = float(
+            probe.get("deferral_confidence_threshold", 0.5)
+        )
+        if not 0.0 <= deferral_threshold <= 1.0:
+            raise ValueError(
+                "probe.deferral_confidence_threshold must be in [0, 1]"
+            )
+        if int(probe.get("max_region_deferrals", 4)) < 0:
+            raise ValueError("probe.max_region_deferrals must be non-negative")
         mean_field = probe.get("mean_field", {})
         if mean_field and int(mean_field.get("topk", 1)) <= 0:
             raise ValueError("probe.mean_field.topk must be positive")

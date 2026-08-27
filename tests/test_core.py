@@ -11,6 +11,7 @@ from dream_region_pilot.commit import (
     describe_commitments,
     sample_tokens,
 )
+from dream_region_pilot.config import load_config
 from dream_region_pilot.dependencies import (
     aggregate_region_dependencies,
     threshold_region_graph,
@@ -33,6 +34,27 @@ def test_fixed_regions_exclude_prompt_by_construction():
         tuple(range(32, 64)),
         tuple(range(64, 70)),
     ]
+
+
+def test_config_rejects_invalid_bounded_deferral_settings(tmp_path):
+    config = tmp_path / "invalid.yaml"
+    config.write_text(
+        """
+model: {}
+data: {task: gsm8k}
+generation: {region_size: 32, steps: 32, max_new_tokens: 32}
+dependency: {}
+experiment: {}
+probe: {deferral_confidence_threshold: 1.1, max_region_deferrals: -1}
+""",
+        encoding="utf-8",
+    )
+    try:
+        load_config(config)
+    except ValueError as error:
+        assert "deferral_confidence_threshold" in str(error)
+    else:
+        raise AssertionError("invalid bounded deferral settings were accepted")
 
 
 def test_temperature_sampling_uses_multinomial_and_greedy_numeric_fallback(
@@ -227,6 +249,14 @@ def test_new_comparison_strategy_names_parse_without_changing_mode():
         "controlled_dapd_dynamic",
         0,
     )
+    assert parse_strategy("always_on_bounded_defer") == (
+        "always_on_bounded_defer",
+        0,
+    )
+    assert parse_strategy("always_on_bounded_defer_tail_guard") == (
+        "always_on_bounded_defer_tail_guard",
+        0,
+    )
 
 
 def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():
@@ -339,6 +369,118 @@ def test_always_on_tail_guard_has_no_admission_or_backpressure():
     ] == [0, 1]
     assert scheduler.last_control_edges == set()
     assert scheduler.last_blocked_regions == set()
+
+
+def test_bounded_deferral_modes_start_every_region_without_backpressure():
+    regions = build_fixed_regions(12, 4)
+    scheduler = RegionScheduler(regions, mode="always_on_bounded_defer")
+    assert scheduler.admitted_count == 3
+    assert [
+        region.index for region in scheduler.regions_allowed_to_advance(4)
+    ] == [0, 1, 2]
+    assert scheduler.last_control_edges == set()
+
+
+def test_bounded_deferral_skips_then_forces_the_ordinary_update():
+    regions = build_fixed_regions(4, 4)
+    regions[0].schedule_step = 1
+    mask_id = 2
+    tokens = torch.full((1, 4), mask_id, dtype=torch.long)
+    # All candidates have raw top-1 probability about 0.5, below the gate.
+    logits = torch.tensor(
+        [[[0.0, 0.0, -10.0]] * 4], dtype=torch.float32
+    )
+    deferral_counts = {0: 0}
+
+    for expected_count in (1, 2):
+        decisions = []
+        committed = commit_active_regions(
+            tokens,
+            logits,
+            prompt_length=0,
+            mask_token_id=mask_id,
+            regions=regions,
+            local_steps=4,
+            eps=0.001,
+            temperature=0.0,
+            top_p=None,
+            top_k=None,
+            policy="entropy",
+            alg_temp=0.0,
+            deferral_confidence_threshold=0.8,
+            max_region_deferrals=2,
+            region_deferral_counts=deferral_counts,
+            deferral_decisions=decisions,
+        )
+        assert committed == {0: []}
+        assert decisions[0]["action"] == "deferred"
+        assert deferral_counts[0] == expected_count
+        # The caller excludes deferred regions from apply_updates, so the same
+        # local schedule point remains pending.
+        assert regions[0].schedule_step == 1
+
+    decisions = []
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        deferral_confidence_threshold=0.8,
+        max_region_deferrals=2,
+        region_deferral_counts=deferral_counts,
+        deferral_decisions=decisions,
+    )
+    assert len(committed[0]) == 1
+    assert decisions[0]["action"] == "forced"
+    assert deferral_counts[0] == 0
+
+
+def test_bounded_deferral_does_not_count_natural_zero_quota():
+    regions = build_fixed_regions(4, 4)
+    mask_id = 2
+    tokens = torch.full((1, 4), mask_id, dtype=torch.long)
+    logits = torch.tensor(
+        [[[8.0, 0.0, -10.0]] * 4], dtype=torch.float32
+    )
+    deferral_counts = {0: 0}
+    decisions = []
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        deferral_confidence_threshold=0.8,
+        max_region_deferrals=2,
+        region_deferral_counts=deferral_counts,
+        deferral_decisions=decisions,
+    )
+    assert committed == {0: []}
+    assert decisions == [
+        {
+            "region": 0,
+            "action": "natural_zero_quota",
+            "scheduled_quota": 0,
+            "minimum_scheduled_raw_top1_probability": None,
+            "consecutive_deferrals": 0,
+        }
+    ]
+    assert deferral_counts == {0: 0}
 
 
 def test_predicted_tail_region_uses_earliest_masked_stop():

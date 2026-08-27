@@ -61,6 +61,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mean-field-combination-threshold", type=float)
     parser.add_argument("--max-progress-gap", type=int)
     parser.add_argument("--edge-persistence", type=int)
+    parser.add_argument("--deferral-confidence-threshold", type=float)
+    parser.add_argument("--max-region-deferrals", type=int)
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
@@ -155,6 +157,8 @@ def main() -> None:
         "readiness_confidence_threshold": args.readiness_confidence_threshold,
         "max_progress_gap": args.max_progress_gap,
         "edge_persistence": args.edge_persistence,
+        "deferral_confidence_threshold": args.deferral_confidence_threshold,
+        "max_region_deferrals": args.max_region_deferrals,
     }
     for key, value in probe_overrides.items():
         if value is not None:
@@ -172,6 +176,8 @@ def main() -> None:
         "fixed_sequential",
         "always_on",
         "always_on_tail_guard",
+        "always_on_bounded_defer",
+        "always_on_bounded_defer_tail_guard",
         "async_lag0",
         "async_lag1",
         "async_lag2",
@@ -262,7 +268,12 @@ def main() -> None:
                 diagnostics_dir = None
                 if run_position < diagnostics_count and (
                     strategy.startswith("async_")
-                    or strategy in {"always_on", "always_on_tail_guard"}
+                    or strategy in {
+                        "always_on",
+                        "always_on_tail_guard",
+                        "always_on_bounded_defer",
+                        "always_on_bounded_defer_tail_guard",
+                    }
                     or strategy == "wavefront_probe"
                     or strategy == "loose_wavefront"
                     or strategy == "flowblock_proxy"
@@ -369,6 +380,9 @@ def main() -> None:
             "controlled_position uses the identical admission and bounded-skew controller without dynamic DAPD/JSD edges, isolating whether graph control helps beyond positional staggering.",
             "controlled_position_tail_guard is a coarse terminal-region ablation: while an earlier fixed region remains unfinished, it withholds the region containing the earliest currently masked top-1 stop-token prediction and every later region from forced progress.",
             "always_on_tail_guard applies the same coarse terminal-region guard with all regions admitted from iteration zero and no positional or dependency backpressure.",
+            "always_on_bounded_defer keeps every region active from iteration zero but withholds a region's ordinary local update when the least-confident token in that update's quota is below the raw, untempered top-1 probability threshold. The local schedule cursor does not advance on a confidence deferral.",
+            "Bounded deferral forces the ordinary regional update after the configured number of consecutive skips. Natural zero-token points in Dream's transfer schedule advance the schedule cursor and do not count as confidence deferrals.",
+            "always_on_bounded_defer_tail_guard combines bounded regional deferral with the identical predicted terminal-region guard; it has no admission window, parent graph, or positional backpressure.",
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",

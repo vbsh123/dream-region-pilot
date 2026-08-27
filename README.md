@@ -267,6 +267,37 @@ wavefront: all eight regions start on iteration zero, with no readiness
 admission and no positional or dependency backpressure. Only a provisional
 tail region and the regions after it can be paused.
 
+`always_on_bounded_defer` also starts every region on iteration zero. Before
+an ordinary regional Dream update is applied, it checks the raw, untempered
+top-1 probabilities of the tokens that update would commit. If the least
+confident scheduled token is below the configured threshold, the region keeps
+the same local schedule step and commits nothing. After a bounded number of
+consecutive skips, its ordinary update is forced, preventing permanent stalls.
+Dream transfer steps whose quota is naturally zero do not consume this
+deferral allowance. `always_on_bounded_defer_tail_guard` combines this rule
+with the same provisional terminal-region guard.
+
+Run the initial 50-example GSM8K-CoT deferral comparison:
+
+```bash
+python -m dream_region_pilot.run_gsm8k \
+  --config configs/gsm8k_cot_official_50.yaml \
+  --output-dir outputs/gsm8k_bounded_deferral_50 \
+  --limit 50 \
+  --strategies \
+    vanilla \
+    vanilla_steps64 \
+    vanilla_steps72 \
+    always_on \
+    always_on_tail_guard \
+    always_on_bounded_defer \
+    always_on_bounded_defer_tail_guard \
+  --deferral-confidence-threshold 0.5 \
+  --max-region-deferrals 4 \
+  --diagnostic-examples 3 \
+  --diagnostic-snapshot-interval 4
+```
+
 Run the complete 164-task HumanEval split with paired baselines:
 
 ```bash

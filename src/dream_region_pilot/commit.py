@@ -107,12 +107,26 @@ def commit_active_regions(
     policy: str,
     alg_temp: float | None,
     region_groups: list[list[Region]] | None = None,
+    deferral_confidence_threshold: float | None = None,
+    max_region_deferrals: int = 0,
+    region_deferral_counts: dict[int, int] | None = None,
+    deferral_decisions: list[dict[str, Any]] | None = None,
 ) -> dict[int, list[int]]:
+    if deferral_confidence_threshold is not None:
+        if not 0.0 <= deferral_confidence_threshold <= 1.0:
+            raise ValueError("deferral_confidence_threshold must be in [0, 1]")
+        if max_region_deferrals < 0:
+            raise ValueError("max_region_deferrals must be non-negative")
+        if region_deferral_counts is None:
+            raise ValueError(
+                "region_deferral_counts is required when deferral is enabled"
+            )
     response_mask = tokens[0, prompt_length:] == mask_token_id
     absolute_mask = tokens == mask_token_id
     absolute_mask[:, :prompt_length] = False
+    masked_logits = logits[absolute_mask]
     confidence, predictions = sample_tokens(
-        logits[absolute_mask],
+        masked_logits,
         temperature=temperature,
         top_p=top_p,
         top_k=top_k,
@@ -127,12 +141,28 @@ def commit_active_regions(
     full_predictions = tokens.clone()
     full_confidence[absolute_mask] = confidence.to(logits.dtype)
     full_predictions[absolute_mask] = predictions
+    full_raw_top1_probability = torch.zeros(
+        tokens.shape,
+        dtype=torch.float32,
+        device=tokens.device,
+    )
+    if deferral_confidence_threshold is not None:
+        raw_logits = masked_logits.float()
+        raw_maximum = raw_logits.max(dim=-1).values
+        raw_top1_probability = (
+            raw_maximum - torch.logsumexp(raw_logits, dim=-1)
+        ).exp()
+        full_raw_top1_probability[absolute_mask] = raw_top1_probability
 
     committed: dict[int, list[int]] = {region.index: [] for region in regions}
     groups = region_groups or [[region] for region in regions]
     grouped_indices = [region.index for group in groups for region in group]
     if sorted(grouped_indices) != sorted(region.index for region in regions):
         raise ValueError("region_groups must contain every active region exactly once")
+    if deferral_confidence_threshold is not None and any(
+        len(group) != 1 for group in groups
+    ):
+        raise ValueError("bounded deferral requires one commitment pool per region")
 
     for group in groups:
         masked_by_region: dict[int, torch.Tensor] = {}
@@ -159,6 +189,20 @@ def commit_active_regions(
                 eps=eps,
             )
         if count == 0:
+            if deferral_confidence_threshold is not None:
+                region = group[0]
+                if deferral_decisions is not None:
+                    deferral_decisions.append(
+                        {
+                            "region": region.index,
+                            "action": "natural_zero_quota",
+                            "scheduled_quota": 0,
+                            "minimum_scheduled_raw_top1_probability": None,
+                            "consecutive_deferrals": region_deferral_counts.get(
+                                region.index, 0
+                            ),
+                        }
+                    )
             continue
 
         group_relative = torch.cat(
@@ -191,6 +235,46 @@ def commit_active_regions(
             )
         else:
             selected_relative = reserved_relative
+
+        if deferral_confidence_threshold is not None:
+            region = group[0]
+            selected_absolute = selected_relative + prompt_length
+            minimum_probability = float(
+                full_raw_top1_probability[0, selected_absolute].min().item()
+            )
+            previous_deferrals = region_deferral_counts.get(region.index, 0)
+            if (
+                minimum_probability < deferral_confidence_threshold
+                and previous_deferrals < max_region_deferrals
+            ):
+                region_deferral_counts[region.index] = previous_deferrals + 1
+                if deferral_decisions is not None:
+                    deferral_decisions.append(
+                        {
+                            "region": region.index,
+                            "action": "deferred",
+                            "scheduled_quota": int(selected_relative.numel()),
+                            "minimum_scheduled_raw_top1_probability": (
+                                minimum_probability
+                            ),
+                            "consecutive_deferrals": previous_deferrals + 1,
+                        }
+                    )
+                continue
+            forced = minimum_probability < deferral_confidence_threshold
+            region_deferral_counts[region.index] = 0
+            if deferral_decisions is not None:
+                deferral_decisions.append(
+                    {
+                        "region": region.index,
+                        "action": "forced" if forced else "threshold_pass",
+                        "scheduled_quota": int(selected_relative.numel()),
+                        "minimum_scheduled_raw_top1_probability": (
+                            minimum_probability
+                        ),
+                        "consecutive_deferrals": 0,
+                    }
+                )
         selected_absolute = selected_relative + prompt_length
         tokens[0, selected_absolute] = full_predictions[0, selected_absolute]
         for region in group:
