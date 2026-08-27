@@ -18,8 +18,8 @@ def load_config(path: Path) -> dict[str, Any]:
     if task not in {"gsm8k", "asdiv", "math500", "humaneval"}:
         raise ValueError("data.task must be gsm8k, asdiv, math500, or humaneval")
     region_size = int(generation["region_size"])
-    if region_size not in {16, 20, 25, 32, 64}:
-        raise ValueError("Pilot region_size must be 16, 20, 25, 32, or 64")
+    if region_size not in {16, 20, 25, 32, 40, 64}:
+        raise ValueError("Pilot region_size must be 16, 20, 25, 32, 40, or 64")
     if int(generation["steps"]) <= 0 or int(generation["max_new_tokens"]) <= 0:
         raise ValueError("steps and max_new_tokens must be positive")
     probe = config.get("probe", {})

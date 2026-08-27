@@ -500,8 +500,8 @@ bash scripts/run_gsm8k_50.sh outputs/gsm8k_expanded_50_r32 --resume
 ```
 
 To test another supported fixed region size, pass `--region-size` with 16, 20,
-25, 32, or 64. Unless `--local-steps` is supplied, the local schedule length is
-set to the selected region size. Keep outputs in a new directory.
+25, 32, 40, or 64. Unless `--local-steps` is supplied, the local schedule
+length is set to the selected region size. Keep outputs in a new directory.
 
 The main ablations are also direct command-line flags. For example:
 
