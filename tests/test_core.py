@@ -257,6 +257,14 @@ def test_new_comparison_strategy_names_parse_without_changing_mode():
         "always_on_bounded_defer_tail_guard",
         0,
     )
+    assert parse_strategy("always_on_coupled_defer") == (
+        "always_on_coupled_defer",
+        0,
+    )
+    assert parse_strategy("always_on_coupled_defer_tail_guard") == (
+        "always_on_coupled_defer_tail_guard",
+        0,
+    )
 
 
 def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():
@@ -379,6 +387,56 @@ def test_bounded_deferral_modes_start_every_region_without_backpressure():
         region.index for region in scheduler.regions_allowed_to_advance(4)
     ] == [0, 1, 2]
     assert scheduler.last_control_edges == set()
+
+
+def test_coupled_deferral_forces_the_lagging_endpoint_at_gap():
+    regions = build_fixed_regions(16, 8)
+    scheduler = RegionScheduler(
+        regions,
+        mode="always_on_coupled_defer",
+        max_progress_gap=4,
+    )
+    # R0 has revealed four tokens while R1 has revealed none. R0 is paused and
+    # R1 becomes urgent; all regions were nevertheless admitted from t=0.
+    regions[0].remaining_mask_indices = (4, 5, 6, 7)
+    regions[1].remaining_mask_indices = tuple(range(8, 16))
+    allowed = scheduler.regions_allowed_to_advance(8)
+    assert [region.index for region in allowed] == [1]
+    assert scheduler.last_blocked_regions == {0}
+    assert scheduler.last_urgent_regions == {1}
+    assert scheduler.admitted_count == 2
+
+
+def test_coupled_deferral_forced_reason_bypasses_low_confidence():
+    regions = build_fixed_regions(4, 4)
+    regions[0].schedule_step = 1
+    mask_id = 2
+    tokens = torch.full((1, 4), mask_id, dtype=torch.long)
+    logits = torch.tensor(
+        [[[0.0, 0.0, -10.0]] * 4], dtype=torch.float32
+    )
+    decisions = []
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        deferral_confidence_threshold=0.8,
+        max_region_deferrals=None,
+        region_deferral_counts={0: 17},
+        deferral_decisions=decisions,
+        force_region_reasons={0: "gap"},
+    )
+    assert len(committed[0]) == 1
+    assert decisions[0]["action"] == "gap_forced"
 
 
 def test_bounded_deferral_skips_then_forces_the_ordinary_update():

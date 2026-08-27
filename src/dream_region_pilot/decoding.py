@@ -403,10 +403,15 @@ def decode_regional(
     control_timeline: list[dict[str, Any]] = []
     tail_guard_timeline: list[dict[str, Any]] = []
     deferral_timeline: list[dict[str, Any]] = []
-    deferral_modes = {
+    bounded_deferral_modes = {
         "always_on_bounded_defer",
         "always_on_bounded_defer_tail_guard",
     }
+    coupled_deferral_modes = {
+        "always_on_coupled_defer",
+        "always_on_coupled_defer_tail_guard",
+    }
+    deferral_modes = bounded_deferral_modes | coupled_deferral_modes
     uses_bounded_deferral = mode in deferral_modes
     deferral_confidence_threshold = float(
         strategy_probe.get("deferral_confidence_threshold", 0.50)
@@ -414,15 +419,25 @@ def decode_regional(
     max_region_deferrals = int(
         strategy_probe.get("max_region_deferrals", 4)
     )
+    max_global_deferral_iterations = int(
+        strategy_probe.get("max_global_deferral_iterations", 4)
+    )
     if not 0.0 <= deferral_confidence_threshold <= 1.0:
         raise ValueError("probe.deferral_confidence_threshold must be in [0, 1]")
     if max_region_deferrals < 0:
         raise ValueError("probe.max_region_deferrals must be non-negative")
+    if max_global_deferral_iterations <= 0:
+        raise ValueError(
+            "probe.max_global_deferral_iterations must be positive"
+        )
     region_deferral_counts = {region.index: 0 for region in regions}
+    global_empty_deferral_streak = 0
 
     synchronize(device)
     started = time.perf_counter()
     maximum_iterations = local_steps * (len(regions) + lag + 2)
+    if mode in coupled_deferral_modes:
+        maximum_iterations *= max_global_deferral_iterations + 1
     while bool((tokens[:, prompt_length:] == mask_id).any()):
         response_mask = tokens[:, prompt_length:] == mask_id
         should_recompute = use_graph and (
@@ -578,6 +593,7 @@ def decode_regional(
         if mode in {
             "always_on_tail_guard",
             "always_on_bounded_defer_tail_guard",
+            "always_on_coupled_defer_tail_guard",
             "controlled_position_tail_guard",
         }:
             provisional_tail = predicted_tail_region(
@@ -604,6 +620,20 @@ def decode_regional(
             )
         commit_groups = scheduler.commitment_groups(active)
         deferral_decisions: list[dict[str, Any]] = []
+        force_region_reasons: dict[int, str] = {}
+        if mode in coupled_deferral_modes:
+            force_region_reasons.update(
+                {
+                    region_index: "gap"
+                    for region_index in scheduler.last_urgent_regions
+                }
+            )
+            if (
+                global_empty_deferral_streak
+                >= max_global_deferral_iterations
+                and not force_region_reasons
+            ):
+                force_region_reasons[active[0].index] = "global_deadlock"
         committed = commit_active_regions(
             tokens,
             logits,
@@ -623,11 +653,16 @@ def decode_regional(
                 if uses_bounded_deferral
                 else None
             ),
-            max_region_deferrals=max_region_deferrals,
+            max_region_deferrals=(
+                max_region_deferrals
+                if mode in bounded_deferral_modes
+                else None
+            ),
             region_deferral_counts=(
                 region_deferral_counts if uses_bounded_deferral else None
             ),
             deferral_decisions=deferral_decisions,
+            force_region_reasons=force_region_reasons,
         )
         commitment_details: list[dict[str, Any]] = []
         if diagnostics is not None:
@@ -666,7 +701,15 @@ def decode_regional(
             region for region in active if region.index not in deferred_regions
         ]
         advanced = scheduler.apply_updates(schedule_advanced_regions, committed)
-        tokens_committed_per_forward.append(sum(len(value) for value in committed.values()))
+        committed_this_forward = sum(
+            len(value) for value in committed.values()
+        )
+        tokens_committed_per_forward.append(committed_this_forward)
+        if mode in coupled_deferral_modes:
+            if committed_this_forward == 0 and deferred_regions:
+                global_empty_deferral_streak += 1
+            else:
+                global_empty_deferral_streak = 0
         refresh_remaining_masks(
             regions,
             (tokens[0, prompt_length:] == mask_id).detach().cpu().tolist(),
@@ -704,12 +747,15 @@ def decode_regional(
             "guarded_tail_region": guarded_tail,
             "deferral_decisions": deferral_decisions,
             "region_deferral_counts": dict(region_deferral_counts),
+            "force_region_reasons": force_region_reasons,
+            "global_empty_deferral_streak": global_empty_deferral_streak,
         }
         if scheduler.is_controlled:
             control_timeline.append(control_state)
         if mode in {
             "always_on_tail_guard",
             "always_on_bounded_defer_tail_guard",
+            "always_on_coupled_defer_tail_guard",
             "controlled_position_tail_guard",
         }:
             tail_guard_timeline.append(
@@ -729,8 +775,13 @@ def decode_regional(
                         int(item["region"])
                         for item in deferral_decisions
                         if item["action"] == "forced"
+                        or str(item["action"]).endswith("_forced")
                     ),
                     "region_deferral_counts": dict(region_deferral_counts),
+                    "force_region_reasons": force_region_reasons,
+                    "global_empty_deferral_streak": (
+                        global_empty_deferral_streak
+                    ),
                 }
             )
         if diagnostics is not None:
@@ -817,7 +868,12 @@ def decode_regional(
             deferral_confidence_threshold if uses_bounded_deferral else None
         ),
         "max_region_deferrals": (
-            max_region_deferrals if uses_bounded_deferral else None
+            max_region_deferrals if mode in bounded_deferral_modes else None
+        ),
+        "max_global_deferral_iterations": (
+            max_global_deferral_iterations
+            if mode in coupled_deferral_modes
+            else None
         ),
         "iterations_with_tail_guard": sum(
             item["guarded_tail_region"] is not None
@@ -831,6 +887,20 @@ def decode_regional(
         ),
         "forced_region_events": sum(
             len(item["forced_regions"]) for item in deferral_timeline
+        ),
+        "gap_forced_region_events": sum(
+            sum(
+                item["action"] == "gap_forced"
+                for item in timeline_item["decisions"]
+            )
+            for timeline_item in deferral_timeline
+        ),
+        "global_deadlock_forced_region_events": sum(
+            sum(
+                item["action"] == "global_deadlock_forced"
+                for item in timeline_item["decisions"]
+            )
+            for timeline_item in deferral_timeline
         ),
         "iterations_with_blocking": sum(
             bool(item["blocked_regions"]) for item in control_timeline
@@ -897,7 +967,17 @@ def decode_regional(
                                                 "bounded_confidence_deferral"
                                                 if mode
                                                 == "always_on_bounded_defer"
-                                                else "per_region_linear_time"
+                                                else (
+                                                    "confidence_deferral_plus_positional_bounded_staleness"
+                                                    if mode
+                                                    == "always_on_coupled_defer"
+                                                    else (
+                                                        "confidence_deferral_plus_positional_bounded_staleness_plus_predicted_terminal_region_guard"
+                                                        if mode
+                                                        == "always_on_coupled_defer_tail_guard"
+                                                        else "per_region_linear_time"
+                                                    )
+                                                )
                                             )
                                         )
                                     )

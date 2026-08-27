@@ -57,6 +57,7 @@ probe:
   edge_persistence: 2
   deferral_confidence_threshold: 0.50
   max_region_deferrals: 4
+  max_global_deferral_iterations: 4
   flowblock_proxy:
     max_active_regions: 2
     spawn_readiness: 0.60

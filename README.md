@@ -277,6 +277,33 @@ Dream transfer steps whose quota is naturally zero do not consume this
 deferral allowance. `always_on_bounded_defer_tail_guard` combines this rule
 with the same provisional terminal-region guard.
 
+`always_on_coupled_defer` is the coupled variant. Every region is admitted at
+iteration zero and may skip a low-confidence local update. Adjacent positional
+regions may differ by at most `max_progress_gap` revealed tokens. At that
+boundary the leading endpoint is paused and the lagging endpoint's ordinary
+update is forced even when it is below the confidence threshold. If both
+endpoints skip, their relative gap does not change. Four entirely empty
+confidence-deferral iterations force the leftmost active region once, avoiding
+a whole-canvas fixed-point deadlock. The `_tail_guard` form additionally uses
+the provisional terminal-region guard.
+
+Run the intended coupled smoke test with a 0.4 confidence gate and four-token
+progress gap:
+
+```bash
+python -m dream_region_pilot.run_gsm8k \
+  --config configs/gsm8k_cot_official_50.yaml \
+  --output-dir outputs/gsm8k_coupled_defer_smoke_2 \
+  --limit 2 \
+  --strategies \
+    always_on_coupled_defer \
+    always_on_coupled_defer_tail_guard \
+  --deferral-confidence-threshold 0.4 \
+  --max-progress-gap 4 \
+  --max-global-deferral-iterations 4 \
+  --diagnostic-examples 2
+```
+
 Run the initial 50-example GSM8K-CoT deferral comparison:
 
 ```bash

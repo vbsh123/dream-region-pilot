@@ -63,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edge-persistence", type=int)
     parser.add_argument("--deferral-confidence-threshold", type=float)
     parser.add_argument("--max-region-deferrals", type=int)
+    parser.add_argument("--max-global-deferral-iterations", type=int)
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
@@ -159,6 +160,7 @@ def main() -> None:
         "edge_persistence": args.edge_persistence,
         "deferral_confidence_threshold": args.deferral_confidence_threshold,
         "max_region_deferrals": args.max_region_deferrals,
+        "max_global_deferral_iterations": args.max_global_deferral_iterations,
     }
     for key, value in probe_overrides.items():
         if value is not None:
@@ -178,6 +180,8 @@ def main() -> None:
         "always_on_tail_guard",
         "always_on_bounded_defer",
         "always_on_bounded_defer_tail_guard",
+        "always_on_coupled_defer",
+        "always_on_coupled_defer_tail_guard",
         "async_lag0",
         "async_lag1",
         "async_lag2",
@@ -273,6 +277,8 @@ def main() -> None:
                         "always_on_tail_guard",
                         "always_on_bounded_defer",
                         "always_on_bounded_defer_tail_guard",
+                        "always_on_coupled_defer",
+                        "always_on_coupled_defer_tail_guard",
                     }
                     or strategy == "wavefront_probe"
                     or strategy == "loose_wavefront"
@@ -383,6 +389,8 @@ def main() -> None:
             "always_on_bounded_defer keeps every region active from iteration zero but withholds a region's ordinary local update when the least-confident token in that update's quota is below the raw, untempered top-1 probability threshold. The local schedule cursor does not advance on a confidence deferral.",
             "Bounded deferral forces the ordinary regional update after the configured number of consecutive skips. Natural zero-token points in Dream's transfer schedule advance the schedule cursor and do not count as confidence deferrals.",
             "always_on_bounded_defer_tail_guard combines bounded regional deferral with the identical predicted terminal-region guard; it has no admission window, parent graph, or positional backpressure.",
+            "always_on_coupled_defer starts every region immediately, permits low-confidence regional skips, and uses adjacent positional edges to bound revealed-token staleness. When an endpoint is paused at the gap, its lagging neighbor's ordinary update bypasses the confidence gate.",
+            "Coupled deferral has no per-region wall-clock skip deadline: if a parent also skips, the child does not consume positional slack. Four globally empty confidence-deferral iterations trigger one forced leftmost active update solely to prevent a total fixed-point deadlock.",
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",

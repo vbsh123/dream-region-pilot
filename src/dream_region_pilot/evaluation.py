@@ -126,6 +126,20 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     for row in selected
                 )
                 / count,
+                "mean_gap_forced_region_events": sum(
+                    int(row.get("gap_forced_region_events", 0))
+                    for row in selected
+                )
+                / count,
+                "mean_global_deadlock_forced_region_events": sum(
+                    int(
+                        row.get(
+                            "global_deadlock_forced_region_events", 0
+                        )
+                    )
+                    for row in selected
+                )
+                / count,
                 "mean_blocked_region_events": sum(
                     int(row.get("blocked_region_events", 0)) for row in selected
                 )

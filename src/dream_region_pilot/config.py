@@ -43,6 +43,10 @@ def load_config(path: Path) -> dict[str, Any]:
             )
         if int(probe.get("max_region_deferrals", 4)) < 0:
             raise ValueError("probe.max_region_deferrals must be non-negative")
+        if int(probe.get("max_global_deferral_iterations", 4)) <= 0:
+            raise ValueError(
+                "probe.max_global_deferral_iterations must be positive"
+            )
         mean_field = probe.get("mean_field", {})
         if mean_field and int(mean_field.get("topk", 1)) <= 0:
             raise ValueError("probe.mean_field.topk must be positive")

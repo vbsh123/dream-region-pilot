@@ -108,14 +108,15 @@ def commit_active_regions(
     alg_temp: float | None,
     region_groups: list[list[Region]] | None = None,
     deferral_confidence_threshold: float | None = None,
-    max_region_deferrals: int = 0,
+    max_region_deferrals: int | None = 0,
     region_deferral_counts: dict[int, int] | None = None,
     deferral_decisions: list[dict[str, Any]] | None = None,
+    force_region_reasons: dict[int, str] | None = None,
 ) -> dict[int, list[int]]:
     if deferral_confidence_threshold is not None:
         if not 0.0 <= deferral_confidence_threshold <= 1.0:
             raise ValueError("deferral_confidence_threshold must be in [0, 1]")
-        if max_region_deferrals < 0:
+        if max_region_deferrals is not None and max_region_deferrals < 0:
             raise ValueError("max_region_deferrals must be non-negative")
         if region_deferral_counts is None:
             raise ValueError(
@@ -243,9 +244,14 @@ def commit_active_regions(
                 full_raw_top1_probability[0, selected_absolute].min().item()
             )
             previous_deferrals = region_deferral_counts.get(region.index, 0)
+            force_reason = (force_region_reasons or {}).get(region.index)
             if (
                 minimum_probability < deferral_confidence_threshold
-                and previous_deferrals < max_region_deferrals
+                and force_reason is None
+                and (
+                    max_region_deferrals is None
+                    or previous_deferrals < max_region_deferrals
+                )
             ):
                 region_deferral_counts[region.index] = previous_deferrals + 1
                 if deferral_decisions is not None:
@@ -267,7 +273,11 @@ def commit_active_regions(
                 deferral_decisions.append(
                     {
                         "region": region.index,
-                        "action": "forced" if forced else "threshold_pass",
+                        "action": (
+                            f"{force_reason}_forced"
+                            if forced and force_reason is not None
+                            else ("forced" if forced else "threshold_pass")
+                        ),
                         "scheduled_quota": int(selected_relative.numel()),
                         "minimum_scheduled_raw_top1_probability": (
                             minimum_probability

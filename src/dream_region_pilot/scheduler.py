@@ -25,6 +25,8 @@ class RegionScheduler:
             "always_on_tail_guard",
             "always_on_bounded_defer",
             "always_on_bounded_defer_tail_guard",
+            "always_on_coupled_defer",
+            "always_on_coupled_defer_tail_guard",
             "fixed_lag",
             "wavefront_probe",
             "loose_wavefront",
@@ -76,7 +78,10 @@ class RegionScheduler:
 
     @property
     def is_controlled(self) -> bool:
-        return self.mode.startswith("controlled_")
+        return self.mode.startswith("controlled_") or self.mode in {
+            "always_on_coupled_defer",
+            "always_on_coupled_defer_tail_guard",
+        }
 
     @property
     def uses_dynamic_commit_groups(self) -> bool:
@@ -148,6 +153,11 @@ class RegionScheduler:
             "always_on_bounded_defer_tail_guard",
         }:
             return unfinished
+        if self.mode in {
+            "always_on_coupled_defer",
+            "always_on_coupled_defer_tail_guard",
+        }:
+            return self._controlled_regions(unfinished)
         if self.mode == "fixed_sequential":
             return unfinished[:1]
         if self.is_wavefront:
@@ -197,9 +207,20 @@ class RegionScheduler:
             if child_progress > parent_progress:
                 blocked.add(child_index)
                 urgent.add(parent_index)
-            elif parent_progress - child_progress > self.max_progress_gap:
-                blocked.add(parent_index)
-                urgent.add(child_index)
+            else:
+                parent_lead = parent_progress - child_progress
+                coupled_mode = self.mode in {
+                    "always_on_coupled_defer",
+                    "always_on_coupled_defer_tail_guard",
+                }
+                lead_limit_reached = (
+                    parent_lead >= max(1, self.max_progress_gap)
+                    if coupled_mode
+                    else parent_lead > self.max_progress_gap
+                )
+                if lead_limit_reached:
+                    blocked.add(parent_index)
+                    urgent.add(child_index)
         self.last_control_edges = control_edges
         self.last_blocked_regions = blocked
         self.last_urgent_regions = urgent - blocked
@@ -284,6 +305,8 @@ def parse_strategy(name: str) -> tuple[str, int]:
         "always_on_tail_guard",
         "always_on_bounded_defer",
         "always_on_bounded_defer_tail_guard",
+        "always_on_coupled_defer",
+        "always_on_coupled_defer_tail_guard",
         "wavefront_probe",
         "loose_wavefront",
         "flowblock_proxy",
