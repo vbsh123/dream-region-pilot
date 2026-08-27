@@ -628,6 +628,15 @@ def decode_regional(
                     for region_index in scheduler.last_urgent_regions
                 }
             )
+            # Seed every currently admitted region once before confidence is
+            # allowed to defer it. Schedule step zero may still have Dream's
+            # natural zero quota; in that case this reason remains relevant on
+            # the following iteration, when the first real update is due.
+            for region in active:
+                if scheduler.revealed_tokens(region) == 0:
+                    force_region_reasons.setdefault(
+                        region.index, "initial_seed"
+                    )
             if (
                 global_empty_deferral_streak
                 >= max_global_deferral_iterations
@@ -898,6 +907,13 @@ def decode_regional(
         "global_deadlock_forced_region_events": sum(
             sum(
                 item["action"] == "global_deadlock_forced"
+                for item in timeline_item["decisions"]
+            )
+            for timeline_item in deferral_timeline
+        ),
+        "initial_seed_forced_region_events": sum(
+            sum(
+                item["action"] == "initial_seed_forced"
                 for item in timeline_item["decisions"]
             )
             for timeline_item in deferral_timeline

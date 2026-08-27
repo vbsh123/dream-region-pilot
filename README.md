@@ -287,6 +287,10 @@ confidence-deferral iterations force the leftmost active region once, avoiding
 a whole-canvas fixed-point deadlock. The `_tail_guard` form additionally uses
 the provisional terminal-region guard.
 
+Confidence deferral begins only after a region has revealed its first token.
+The first nonzero local update is always permitted, while Dream's preceding
+natural zero-quota schedule point advances without counting as a deferral.
+
 Run the intended coupled smoke test with a 0.4 confidence gate and four-token
 progress gap:
 

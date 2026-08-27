@@ -140,6 +140,11 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     for row in selected
                 )
                 / count,
+                "mean_initial_seed_forced_region_events": sum(
+                    int(row.get("initial_seed_forced_region_events", 0))
+                    for row in selected
+                )
+                / count,
                 "mean_blocked_region_events": sum(
                     int(row.get("blocked_region_events", 0)) for row in selected
                 )
