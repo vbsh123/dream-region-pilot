@@ -300,6 +300,253 @@ def commit_active_regions(
     return committed
 
 
+def _dawn_greedy_independent_set(
+    edge_mask: torch.Tensor,
+    node_mask: torch.Tensor,
+    confidence: torch.Tensor,
+) -> torch.Tensor:
+    """DAWN's confidence-ordered greedy conflict-independent selection.
+
+    This follows the intended MIS procedure in the public DAWN implementation,
+    but stops once no eligible node remains.  The released helper loops for the
+    original candidate count even after neighbors have been suppressed, which
+    can select ``-inf`` non-candidates and even a prompt position.
+    """
+    available = node_mask.clone()
+    conflict = edge_mask | edge_mask.T
+    selected: list[int] = []
+    while bool(available.any()):
+        scores = torch.where(available, confidence, -torch.inf)
+        best = int(torch.argmax(scores).item())
+        selected.append(best)
+        available[best] = False
+        available[conflict[best]] = False
+    return torch.tensor(selected, dtype=torch.long, device=node_mask.device)
+
+
+def dawn_region_transfer_mask(
+    attention: torch.Tensor,
+    mask_index: torch.Tensor,
+    confidence: torch.Tensor,
+    candidate_mask: torch.Tensor,
+    *,
+    sink_threshold: float,
+    edge_threshold: float,
+    high_confidence_threshold: float,
+    induce_threshold: float,
+    candidate_confidence_threshold: float,
+) -> tuple[torch.Tensor, dict[str, int | bool]]:
+    """Apply DAWN's anchor/conflict selector to one regional candidate set.
+
+    Attention and anchors remain full-canvas.  Only the positions eligible for
+    transfer are restricted to ``candidate_mask``; therefore this changes the
+    commitment decision without changing model visibility.
+    """
+    if attention.ndim != 2 or attention.shape[0] != attention.shape[1]:
+        raise ValueError("attention must be a square token-token matrix")
+    if not (
+        attention.shape[0]
+        == mask_index.numel()
+        == confidence.numel()
+        == candidate_mask.numel()
+    ):
+        raise ValueError("DAWN selector tensors must cover the same canvas")
+    for name, value in (
+        ("sink_threshold", sink_threshold),
+        ("edge_threshold", edge_threshold),
+        ("high_confidence_threshold", high_confidence_threshold),
+        ("induce_threshold", induce_threshold),
+        ("candidate_confidence_threshold", candidate_confidence_threshold),
+    ):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1]")
+
+    scores = attention.float().clone()
+    sink_mask = scores.mean(dim=0) > sink_threshold
+    scores.masked_fill_(sink_mask.unsqueeze(0), 0.0)
+    scores.diagonal().zero_()
+    dependency = (scores >= edge_threshold).T
+
+    transfer_confident = candidate_mask & (
+        confidence >= high_confidence_threshold
+    )
+
+    # Match DAWN's current-forward decoded anchors.  Prompt and already
+    # revealed generated tokens may act as anchors, but masked tokens cannot.
+    decoded_anchor = (~mask_index & (
+        confidence >= high_confidence_threshold
+    )).unsqueeze(-1)
+    decoded_edge = dependency & decoded_anchor
+    dependent_nodes = decoded_edge.any(dim=0) & candidate_mask
+    transfer_induced = dependent_nodes & (confidence >= induce_threshold)
+
+    adjacent_transfer = (
+        dependency
+        & transfer_induced.unsqueeze(-1)
+        & transfer_confident.unsqueeze(-1)
+    ).any(dim=0)
+    conflict_candidates = (
+        candidate_mask
+        & (confidence >= candidate_confidence_threshold)
+        & (confidence < high_confidence_threshold)
+        & ~transfer_induced
+        & ~adjacent_transfer
+    )
+    candidate_pairs = (
+        conflict_candidates.unsqueeze(1) & conflict_candidates.unsqueeze(0)
+    )
+    selected_mis = _dawn_greedy_independent_set(
+        candidate_pairs & dependency,
+        conflict_candidates,
+        confidence,
+    )
+    transfer_conflict = torch.zeros_like(candidate_mask)
+    if selected_mis.numel():
+        transfer_conflict[selected_mis] = True
+
+    transfer = transfer_confident | transfer_induced | transfer_conflict
+    used_fallback = False
+    if not bool(transfer.any()) and bool(candidate_mask.any()):
+        fallback_scores = torch.where(candidate_mask, confidence, -torch.inf)
+        transfer[int(torch.argmax(fallback_scores).item())] = True
+        used_fallback = True
+    return transfer, {
+        "confident": int(transfer_confident.sum().item()),
+        "induced": int(transfer_induced.sum().item()),
+        "conflict_mis": int(transfer_conflict.sum().item()),
+        "fallback": used_fallback,
+        "selected": int(transfer.sum().item()),
+    }
+
+
+def commit_active_regions_dawn(
+    tokens: torch.Tensor,
+    logits: torch.Tensor,
+    attention: torch.Tensor,
+    *,
+    prompt_length: int,
+    mask_token_id: int,
+    regions: list[Region],
+    temperature: float,
+    top_p: float | None,
+    top_k: int | None,
+    dawn_config: dict[str, Any],
+    deferral_confidence_threshold: float | None = None,
+    region_deferral_counts: dict[int, int] | None = None,
+    deferral_decisions: list[dict[str, Any]] | None = None,
+    force_region_reasons: dict[int, str] | None = None,
+    selector_stats: list[dict[str, Any]] | None = None,
+) -> dict[int, list[int]]:
+    """Run the official DAWN selection rule independently inside each region."""
+    if tokens.shape[0] != 1:
+        raise ValueError("Regional DAWN pilot currently requires batch size one")
+    if attention.shape != (1, tokens.shape[1], tokens.shape[1]):
+        raise ValueError("DAWN attention must have shape [1, sequence, sequence]")
+    if deferral_confidence_threshold is not None and region_deferral_counts is None:
+        raise ValueError("region_deferral_counts is required when deferral is enabled")
+
+    # DAWN samples predictions and uses their probability as confidence; it
+    # does not use Dream's entropy ranking policy for this selector.
+    confidence, predictions = sample_tokens(
+        logits[0],
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        policy="maskgit_plus",
+    )
+    mask_index = tokens[0] == mask_token_id
+    committed: dict[int, list[int]] = {region.index: [] for region in regions}
+
+    for region in regions:
+        candidate_mask = torch.zeros_like(mask_index)
+        relative = torch.tensor(
+            region.remaining_mask_indices,
+            dtype=torch.long,
+            device=tokens.device,
+        )
+        if relative.numel() == 0:
+            continue
+        candidate_mask[relative + prompt_length] = True
+        transfer, stats = dawn_region_transfer_mask(
+            attention[0],
+            mask_index,
+            confidence,
+            candidate_mask,
+            sink_threshold=float(dawn_config.get("sink_threshold", 0.03)),
+            edge_threshold=float(dawn_config.get("edge_threshold", 0.10)),
+            high_confidence_threshold=float(
+                dawn_config.get("high_confidence_threshold", 0.90)
+            ),
+            induce_threshold=float(dawn_config.get("induce_threshold", 0.75)),
+            candidate_confidence_threshold=float(
+                dawn_config.get("candidate_confidence_threshold", 0.80)
+            ),
+        )
+        selected_absolute = torch.nonzero(transfer, as_tuple=True)[0]
+        selected_relative = selected_absolute - prompt_length
+
+        if deferral_confidence_threshold is not None:
+            selected_logits = logits[0, selected_absolute].float()
+            raw_top = selected_logits.max(dim=-1).values
+            raw_probability = (
+                raw_top - torch.logsumexp(selected_logits, dim=-1)
+            ).exp()
+            minimum_probability = float(raw_probability.min().item())
+            force_reason = (force_region_reasons or {}).get(region.index)
+            if (
+                minimum_probability < deferral_confidence_threshold
+                and force_reason is None
+            ):
+                region_deferral_counts[region.index] = (
+                    region_deferral_counts.get(region.index, 0) + 1
+                )
+                if deferral_decisions is not None:
+                    deferral_decisions.append(
+                        {
+                            "region": region.index,
+                            "action": "deferred",
+                            "scheduled_quota": int(selected_relative.numel()),
+                            "minimum_scheduled_raw_top1_probability": (
+                                minimum_probability
+                            ),
+                            "consecutive_deferrals": region_deferral_counts[
+                                region.index
+                            ],
+                        }
+                    )
+                stats["deferred"] = True
+                if selector_stats is not None:
+                    selector_stats.append({"region": region.index, **stats})
+                continue
+            forced = minimum_probability < deferral_confidence_threshold
+            region_deferral_counts[region.index] = 0
+            if deferral_decisions is not None:
+                deferral_decisions.append(
+                    {
+                        "region": region.index,
+                        "action": (
+                            f"{force_reason}_forced"
+                            if forced and force_reason is not None
+                            else ("forced" if forced else "threshold_pass")
+                        ),
+                        "scheduled_quota": int(selected_relative.numel()),
+                        "minimum_scheduled_raw_top1_probability": (
+                            minimum_probability
+                        ),
+                        "consecutive_deferrals": 0,
+                    }
+                )
+
+        tokens[0, selected_absolute] = predictions[selected_absolute]
+        committed[region.index] = [
+            int(position.item()) for position in selected_relative
+        ]
+        stats["deferred"] = False
+        if selector_stats is not None:
+            selector_stats.append({"region": region.index, **stats})
+    return committed
+
+
 @torch.no_grad()
 def describe_commitments(
     logits: torch.Tensor,

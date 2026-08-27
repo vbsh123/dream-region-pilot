@@ -54,6 +54,26 @@ def verify_dapd_checkout(repo: Path, expected_revision: str) -> str:
     return revision
 
 
+def verify_dawn_checkout(repo: Path, expected_revision: str) -> str:
+    """Verify the pinned official DAWN checkout used by DAWN strategies."""
+    repo = repo.resolve()
+    if not (repo / ".git").is_dir():
+        raise FileNotFoundError(
+            f"DAWN checkout not found at {repo}; run scripts/setup_vast.sh"
+        )
+    revision = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if revision != expected_revision:
+        raise RuntimeError(
+            f"DAWN revision mismatch: expected {expected_revision}, found {revision}"
+        )
+    return revision
+
+
 class DAPDDreamAdapter:
     """Thin adapter over the pinned public DAPD Dream attention implementation."""
 
@@ -74,8 +94,50 @@ class DAPDDreamAdapter:
         self._shift_logits = shift_logits_dream
 
     def forward_logits(self, model, tokens: torch.Tensor) -> torch.Tensor:
+        # The official DAWN Dream fork returns ``(ModelOutput, attention)`` even
+        # when attention reconstruction is disabled.  The ordinary public
+        # Dream model returns a ModelOutput directly.  Supporting both here
+        # keeps vanilla and regional comparisons on the same loaded weights.
+        if model.__class__.__module__ == "model.modeling_dream":
+            outputs = model(
+                tokens,
+                attention_mask="full",
+                output_attentions=False,
+                return_dict=True,
+            )
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]
+            return self._shift_logits(outputs.logits)
         outputs = model.model(tokens, output_attentions=False, return_dict=True)
         return self._shift_logits(model.lm_head(outputs.last_hidden_state))
+
+    def forward_with_dawn_attention(
+        self,
+        model,
+        tokens: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the official DAWN Dream attention path in one model forward.
+
+        DAWN's model fork averages full-attention probabilities over layers 24
+        and later.  It returns those scores alongside the normal model output,
+        so this path avoids the DAPD hook's CPU Q/K staging and does not add a
+        second model evaluation.
+        """
+        result = model(
+            tokens,
+            attention_mask="full",
+            output_attentions=False,
+            return_attn_scores=True,
+            return_dict=True,
+        )
+        if not isinstance(result, tuple) or len(result) != 2:
+            raise RuntimeError(
+                "DAWN strategy requires the pinned official DAWN Dream model fork"
+            )
+        outputs, attention = result
+        if attention is None:
+            raise RuntimeError("Official DAWN model returned no attention scores")
+        return self._shift_logits(outputs.logits), attention
 
     def forward_with_dependencies(
         self,

@@ -63,6 +63,8 @@ controlled_dapd_dynamic  DAPD components with pooled commitment selection
 controlled_jsd_dynamic   JSD components with pooled commitment selection
 controlled_combo_dynamic DAPD-intersection-JSD components with pooled selection
 mean_field_repro      paper Algorithm 1 commit policy, exact JSD per active block
+always_on_dawn_tail_guard  regional official-DAWN selector plus terminal guard
+always_on_coupled_defer_dawn_tail_guard  DAWN selector plus coupled startup guard
 flowblock_proxy       Dream-side W=2, theta=0.60 admission proxy
 vanilla               official Dream diffusion_generate
 ```
@@ -289,6 +291,43 @@ the provisional terminal-region guard. Optionally,
 `--deferral-until-revealed-tokens 2` limits confidence deferral to the first
 two actually revealed tokens of each region; after that, the region's ordinary
 updates bypass the confidence gate while positional gap control remains active.
+
+The DAWN ablation replaces that ordinary per-region transfer quota with DAWN's
+anchor/conflict selector. `always_on_dawn_tail_guard` isolates the selector;
+`always_on_coupled_defer_dawn_tail_guard` adds our first-two-token deferral and
+adjacent revealed-token backpressure. Both use one shared full-canvas forward
+and restrict only the selected commitment positions per region. Full attention
+visibility is unchanged. The pinned official DAWN Dream fork supplies logits
+and its layers-24+ averaged attention in that same forward.
+
+Install only the pinned DAWN source into an existing Vast checkout with:
+
+```bash
+bash scripts/setup_dawn_source.sh
+```
+
+Then run the selector attribution and the combined method together:
+
+```bash
+python -m dream_region_pilot.run_gsm8k \
+  --config configs/gsm8k_cot_official_50.yaml \
+  --output-dir outputs/gsm8k_regional_dawn_50 \
+  --limit 50 \
+  --strategies \
+    always_on_coupled_defer_tail_guard \
+    always_on_dawn_tail_guard \
+    always_on_coupled_defer_dawn_tail_guard \
+  --deferral-confidence-threshold 0.4 \
+  --deferral-until-revealed-tokens 2 \
+  --max-progress-gap 4 \
+  --max-global-deferral-iterations 4 \
+  --diagnostic-examples 3 \
+  --diagnostic-snapshot-interval 4
+```
+
+The default DAWN thresholds are its released Dream GSM8K values: sink 0.03,
+edge 0.10, induced-token confidence 0.75, conflict-candidate confidence 0.80,
+and direct high confidence 0.90. Each is exposed as a `--dawn-*` flag.
 
 Run the intended coupled smoke test with a 0.4 confidence gate and four-token
 progress gap:

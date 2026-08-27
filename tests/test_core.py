@@ -8,6 +8,8 @@ from dream_region_pilot.benchmarks import (
 )
 from dream_region_pilot.commit import (
     commit_active_regions,
+    commit_active_regions_dawn,
+    dawn_region_transfer_mask,
     describe_commitments,
     sample_tokens,
 )
@@ -303,6 +305,68 @@ def test_new_comparison_strategy_names_parse_without_changing_mode():
         "always_on_coupled_defer_tail_guard",
         0,
     )
+    assert parse_strategy("always_on_dawn_tail_guard") == (
+        "always_on_dawn_tail_guard",
+        0,
+    )
+    assert parse_strategy("always_on_coupled_defer_dawn_tail_guard") == (
+        "always_on_coupled_defer_dawn_tail_guard",
+        0,
+    )
+
+
+def test_dawn_conflict_selection_stops_after_suppressing_neighbors():
+    attention = torch.zeros((4, 4), dtype=torch.float32)
+    attention[1, 0] = 0.8
+    mask = torch.ones(4, dtype=torch.bool)
+    confidence = torch.tensor([0.85, 0.84, 0.83, 0.82])
+    selected, stats = dawn_region_transfer_mask(
+        attention,
+        mask,
+        confidence,
+        torch.ones(4, dtype=torch.bool),
+        sink_threshold=1.0,
+        edge_threshold=0.5,
+        high_confidence_threshold=0.9,
+        induce_threshold=0.75,
+        candidate_confidence_threshold=0.8,
+    )
+    # Positions zero and one conflict. Greedy confidence keeps zero, then the
+    # two independent positions; it must not reselect the suppressed neighbor.
+    assert torch.equal(selected, torch.tensor([True, False, True, True]))
+    assert stats["conflict_mis"] == 3
+    assert stats["fallback"] is False
+
+
+def test_regional_dawn_fallback_is_scoped_to_active_region():
+    regions = build_fixed_regions(4, 2)
+    mask_id = 2
+    tokens = torch.full((1, 4), mask_id, dtype=torch.long)
+    logits = torch.tensor(
+        [[[2.0, 0.0, -8.0], [1.0, 0.0, -8.0],
+          [8.0, 0.0, -8.0], [7.0, 0.0, -8.0]]]
+    )
+    stats = []
+    committed = commit_active_regions_dawn(
+        tokens,
+        logits,
+        torch.zeros((1, 4, 4)),
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=[regions[0]],
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        dawn_config={
+            "high_confidence_threshold": 1.0,
+            "candidate_confidence_threshold": 1.0,
+        },
+        selector_stats=stats,
+    )
+    assert committed == {0: [0]}
+    assert tokens[0, 0].item() == 0
+    assert torch.equal(tokens[0, 1:], torch.tensor([2, 2, 2]))
+    assert stats[0]["fallback"] is True
 
 
 def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():

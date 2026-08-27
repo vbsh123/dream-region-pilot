@@ -55,6 +55,17 @@ def load_config(path: Path) -> dict[str, Any]:
         mean_field = probe.get("mean_field", {})
         if mean_field and int(mean_field.get("topk", 1)) <= 0:
             raise ValueError("probe.mean_field.topk must be positive")
+        dawn = probe.get("dawn", {})
+        for key, default in (
+            ("sink_threshold", 0.03),
+            ("edge_threshold", 0.10),
+            ("high_confidence_threshold", 0.90),
+            ("induce_threshold", 0.75),
+            ("candidate_confidence_threshold", 0.80),
+        ):
+            value = float(dawn.get(key, default))
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"probe.dawn.{key} must be in [0, 1]")
         flowblock_proxy = probe.get("flowblock_proxy", {})
         if flowblock_proxy:
             if int(flowblock_proxy.get("max_active_regions", 2)) <= 0:

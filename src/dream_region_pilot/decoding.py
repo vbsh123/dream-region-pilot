@@ -7,7 +7,11 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from .commit import commit_active_regions, describe_commitments
+from .commit import (
+    commit_active_regions,
+    commit_active_regions_dawn,
+    describe_commitments,
+)
 from .dependencies import DAPDDreamAdapter, graph_summary, make_dependency_snapshot
 from .diagnostics import ExampleDiagnostics
 from .mean_field import mean_field_commit_indices, topk_tail_jsd_dependency
@@ -319,6 +323,17 @@ def decode_regional(
     regions = build_fixed_regions(generation_length, region_size)
     refresh_remaining_masks(regions, [True] * generation_length)
     probe = probe or {}
+    uses_dawn_selector = mode in {
+        "always_on_dawn_tail_guard",
+        "always_on_coupled_defer_dawn_tail_guard",
+    }
+    # DAWN guarantees at least one transfer for every scheduled nonempty
+    # region.  Let a region consume up to one scheduling point per position so
+    # region-size ablations cannot exhaust a shorter Dream quota prematurely.
+    scheduler_local_steps = (
+        max(local_steps, region_size) if uses_dawn_selector else local_steps
+    )
+    dawn_config = probe.get("dawn", {})
     strategy_probe = probe
     if mode == "flowblock_proxy":
         flowblock_proxy = probe.get("flowblock_proxy", {})
@@ -410,6 +425,7 @@ def decode_regional(
     coupled_deferral_modes = {
         "always_on_coupled_defer",
         "always_on_coupled_defer_tail_guard",
+        "always_on_coupled_defer_dawn_tail_guard",
     }
     deferral_modes = bounded_deferral_modes | coupled_deferral_modes
     uses_bounded_deferral = mode in deferral_modes
@@ -447,10 +463,12 @@ def decode_regional(
         )
     region_deferral_counts = {region.index: 0 for region in regions}
     global_empty_deferral_streak = 0
+    dawn_selection_seconds = 0.0
+    dawn_selector_timeline: list[dict[str, Any]] = []
 
     synchronize(device)
     started = time.perf_counter()
-    maximum_iterations = local_steps * (len(regions) + lag + 2)
+    maximum_iterations = scheduler_local_steps * (len(regions) + lag + 2)
     if mode in coupled_deferral_modes:
         maximum_iterations *= max_global_deferral_iterations + 1
     while bool((tokens[:, prompt_length:] == mask_id).any()):
@@ -458,7 +476,12 @@ def decode_regional(
         should_recompute = use_graph and (
             latest_snapshot is None or nfe % recompute_interval == 0
         )
-        if should_recompute:
+        dawn_attention = None
+        if uses_dawn_selector:
+            logits, dawn_attention = adapter.forward_with_dawn_attention(
+                model, tokens
+            )
+        elif should_recompute:
             if needs_dapd:
                 synchronize(device)
                 dependency_started = time.perf_counter()
@@ -607,8 +630,10 @@ def decode_regional(
         guarded_tail = None
         if mode in {
             "always_on_tail_guard",
+            "always_on_dawn_tail_guard",
             "always_on_bounded_defer_tail_guard",
             "always_on_coupled_defer_tail_guard",
+            "always_on_coupled_defer_dawn_tail_guard",
             "controlled_position_tail_guard",
         }:
             provisional_tail = predicted_tail_region(
@@ -623,7 +648,7 @@ def decode_regional(
             ):
                 guarded_tail = provisional_tail
         active = scheduler.regions_allowed_to_advance(
-            local_steps,
+            scheduler_local_steps,
             max_region_exclusive=guarded_tail,
         )
         if not active:
@@ -658,36 +683,70 @@ def decode_regional(
                 and not force_region_reasons
             ):
                 force_region_reasons[active[0].index] = "global_deadlock"
-        committed = commit_active_regions(
-            tokens,
-            logits,
-            prompt_length=prompt_length,
-            mask_token_id=mask_id,
-            regions=active,
-            local_steps=local_steps,
-            eps=float(generation["eps"]),
-            temperature=float(generation.get("temperature", 0.0)),
-            top_p=generation.get("top_p"),
-            top_k=generation.get("top_k"),
-            policy=str(generation["commit_policy"]),
-            alg_temp=generation.get("alg_temp"),
-            region_groups=commit_groups,
-            deferral_confidence_threshold=(
-                deferral_confidence_threshold
-                if uses_bounded_deferral
-                else None
-            ),
-            max_region_deferrals=(
-                max_region_deferrals
-                if mode in bounded_deferral_modes
-                else None
-            ),
-            region_deferral_counts=(
-                region_deferral_counts if uses_bounded_deferral else None
-            ),
-            deferral_decisions=deferral_decisions,
-            force_region_reasons=force_region_reasons,
-        )
+        dawn_selector_stats: list[dict[str, Any]] = []
+        if uses_dawn_selector:
+            if dawn_attention is None:
+                raise RuntimeError("DAWN selector has no attention matrix")
+            synchronize(device)
+            dawn_selection_started = time.perf_counter()
+            committed = commit_active_regions_dawn(
+                tokens,
+                logits,
+                dawn_attention,
+                prompt_length=prompt_length,
+                mask_token_id=mask_id,
+                regions=active,
+                temperature=float(generation.get("temperature", 0.0)),
+                top_p=generation.get("top_p"),
+                top_k=generation.get("top_k"),
+                dawn_config=dawn_config,
+                deferral_confidence_threshold=(
+                    deferral_confidence_threshold
+                    if uses_bounded_deferral
+                    else None
+                ),
+                region_deferral_counts=(
+                    region_deferral_counts if uses_bounded_deferral else None
+                ),
+                deferral_decisions=deferral_decisions,
+                force_region_reasons=force_region_reasons,
+                selector_stats=dawn_selector_stats,
+            )
+            synchronize(device)
+            dawn_selection_seconds += (
+                time.perf_counter() - dawn_selection_started
+            )
+        else:
+            committed = commit_active_regions(
+                tokens,
+                logits,
+                prompt_length=prompt_length,
+                mask_token_id=mask_id,
+                regions=active,
+                local_steps=local_steps,
+                eps=float(generation["eps"]),
+                temperature=float(generation.get("temperature", 0.0)),
+                top_p=generation.get("top_p"),
+                top_k=generation.get("top_k"),
+                policy=str(generation["commit_policy"]),
+                alg_temp=generation.get("alg_temp"),
+                region_groups=commit_groups,
+                deferral_confidence_threshold=(
+                    deferral_confidence_threshold
+                    if uses_bounded_deferral
+                    else None
+                ),
+                max_region_deferrals=(
+                    max_region_deferrals
+                    if mode in bounded_deferral_modes
+                    else None
+                ),
+                region_deferral_counts=(
+                    region_deferral_counts if uses_bounded_deferral else None
+                ),
+                deferral_decisions=deferral_decisions,
+                force_region_reasons=force_region_reasons,
+            )
         commitment_details: list[dict[str, Any]] = []
         if diagnostics is not None:
             synchronize(device)
@@ -773,13 +832,16 @@ def decode_regional(
             "region_deferral_counts": dict(region_deferral_counts),
             "force_region_reasons": force_region_reasons,
             "global_empty_deferral_streak": global_empty_deferral_streak,
+            "dawn_selector": dawn_selector_stats,
         }
         if scheduler.is_controlled:
             control_timeline.append(control_state)
         if mode in {
             "always_on_tail_guard",
+            "always_on_dawn_tail_guard",
             "always_on_bounded_defer_tail_guard",
             "always_on_coupled_defer_tail_guard",
+            "always_on_coupled_defer_dawn_tail_guard",
             "controlled_position_tail_guard",
         }:
             tail_guard_timeline.append(
@@ -787,6 +849,13 @@ def decode_regional(
                     "iteration": nfe,
                     "predicted_tail_region": provisional_tail,
                     "guarded_tail_region": guarded_tail,
+                }
+            )
+        if uses_dawn_selector:
+            dawn_selector_timeline.append(
+                {
+                    "iteration": nfe,
+                    "regions": dawn_selector_stats,
                 }
             )
         if uses_bounded_deferral:
@@ -867,6 +936,20 @@ def decode_regional(
         "dependency_seconds": dependency_seconds,
         "mean_field_seconds": mean_field_seconds,
         "dependency_signal_seconds": dependency_seconds + mean_field_seconds,
+        "dawn_selection_seconds": dawn_selection_seconds,
+        "dawn_selector_timeline": dawn_selector_timeline,
+        "dawn_fallback_region_events": sum(
+            int(bool(region_item.get("fallback")))
+            for item in dawn_selector_timeline
+            for region_item in item["regions"]
+        ),
+        "dawn_selected_tokens": sum(
+            int(region_item.get("selected", 0))
+            for item in dawn_selector_timeline
+            for region_item in item["regions"]
+            if not bool(region_item.get("deferred"))
+        ),
+        "dawn_config": dawn_config if uses_dawn_selector else None,
         "graph_summaries": graph_summaries,
         "mean_graph_edge_density": (
             sum(item["edge_density"] for item in graph_summaries)
@@ -971,6 +1054,12 @@ def decode_regional(
         ],
         "schedule_approximation": True,
         "schedule_approximation_name": (
+            "regional_dawn_selector_plus_coupled_startup_deferral_and_tail_guard"
+            if mode == "always_on_coupled_defer_dawn_tail_guard"
+            else (
+                "regional_dawn_selector_plus_tail_guard"
+                if mode == "always_on_dawn_tail_guard"
+                else (
             "per_region_linear_time_with_completed_parent_release"
             if mode == "fixed_lag" and release_completed_parents
             else (
@@ -1021,6 +1110,8 @@ def decode_regional(
                             )
                         )
                     )
+                )
+            )
                 )
             )
         ),

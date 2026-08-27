@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from .benchmarks import (
 )
 from .config import load_config
 from .decoding import decode_mean_field_repro, decode_regional, decode_vanilla
-from .dependencies import DAPDDreamAdapter
+from .dependencies import DAPDDreamAdapter, verify_dawn_checkout
 from .evaluation import write_summary
 
 
@@ -67,6 +68,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-region-deferrals", type=int)
     parser.add_argument("--max-global-deferral-iterations", type=int)
     parser.add_argument("--deferral-until-revealed-tokens", type=int)
+    parser.add_argument("--dawn-sink-threshold", type=float)
+    parser.add_argument("--dawn-edge-threshold", type=float)
+    parser.add_argument("--dawn-high-confidence-threshold", type=float)
+    parser.add_argument("--dawn-induce-threshold", type=float)
+    parser.add_argument("--dawn-candidate-confidence-threshold", type=float)
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
@@ -89,7 +95,13 @@ def torch_dtype(name: str):
     return choices[name]
 
 
-def load_model(model_config: dict[str, Any]):
+def load_model(
+    model_config: dict[str, Any],
+    *,
+    use_dawn_model: bool = False,
+    dawn_repo: Path | None = None,
+    dawn_revision: str | None = None,
+):
     kwargs = {
         "trust_remote_code": bool(model_config.get("trust_remote_code", True)),
         "torch_dtype": torch_dtype(str(model_config.get("dtype", "bfloat16"))),
@@ -103,7 +115,18 @@ def load_model(model_config: dict[str, Any]):
         trust_remote_code=kwargs["trust_remote_code"],
         revision=kwargs.get("revision"),
     )
-    model = AutoModel.from_pretrained(name, **kwargs)
+    model_class = AutoModel
+    if use_dawn_model:
+        if dawn_repo is None or dawn_revision is None:
+            raise ValueError("DAWN model requires a pinned repository and revision")
+        verify_dawn_checkout(dawn_repo, dawn_revision)
+        dawn_python_root = str(dawn_repo.resolve() / "dream")
+        if dawn_python_root not in sys.path:
+            sys.path.insert(0, dawn_python_root)
+        from model.modeling_dream import DreamModel
+
+        model_class = DreamModel
+    model = model_class.from_pretrained(name, **kwargs)
     device = torch.device(str(model_config.get("device", "cuda")))
     return model.to(device).eval(), tokenizer
 
@@ -179,15 +202,30 @@ def main() -> None:
         mean_field_config["combination_threshold"] = (
             args.mean_field_combination_threshold
         )
+    dawn_config = probe_config.setdefault("dawn", {})
+    dawn_overrides = {
+        "sink_threshold": args.dawn_sink_threshold,
+        "edge_threshold": args.dawn_edge_threshold,
+        "high_confidence_threshold": args.dawn_high_confidence_threshold,
+        "induce_threshold": args.dawn_induce_threshold,
+        "candidate_confidence_threshold": (
+            args.dawn_candidate_confidence_threshold
+        ),
+    }
+    for key, value in dawn_overrides.items():
+        if value is not None:
+            dawn_config[key] = value
     strategies = args.strategies or list(config["experiment"]["strategies"])
     allowed = set(VANILLA_STEP_OVERRIDES) | {
         "fixed_sequential",
         "always_on",
         "always_on_tail_guard",
+        "always_on_dawn_tail_guard",
         "always_on_bounded_defer",
         "always_on_bounded_defer_tail_guard",
         "always_on_coupled_defer",
         "always_on_coupled_defer_tail_guard",
+        "always_on_coupled_defer_dawn_tail_guard",
         "async_lag0",
         "async_lag1",
         "async_lag2",
@@ -232,9 +270,21 @@ def main() -> None:
     else:
         dataset = load_benchmark(config["data"], args.limit)
         dataset_items = list(enumerate(dataset))
-    task = str(config["data"].get("task", "gsm8k"))
-    model, tokenizer = load_model(config["model"])
     dependency_config = config["dependency"]
+    uses_dawn = any("dawn" in strategy for strategy in strategies)
+    dawn_repo = Path(dependency_config.get("dawn_repo", "external/DAWN"))
+    dawn_revision = str(
+        dependency_config.get(
+            "dawn_revision", "19c32c28b5bf0475ccdfad853c74fc885f6410cd"
+        )
+    )
+    task = str(config["data"].get("task", "gsm8k"))
+    model, tokenizer = load_model(
+        config["model"],
+        use_dawn_model=uses_dawn,
+        dawn_repo=dawn_repo if uses_dawn else None,
+        dawn_revision=dawn_revision if uses_dawn else None,
+    )
     adapter = DAPDDreamAdapter(
         Path(dependency_config["dapd_repo"]),
         str(dependency_config["dapd_revision"]),
@@ -285,6 +335,8 @@ def main() -> None:
                         "always_on_bounded_defer_tail_guard",
                         "always_on_coupled_defer",
                         "always_on_coupled_defer_tail_guard",
+                        "always_on_dawn_tail_guard",
+                        "always_on_coupled_defer_dawn_tail_guard",
                     }
                     or strategy == "wavefront_probe"
                     or strategy == "loose_wavefront"
@@ -369,6 +421,7 @@ def main() -> None:
         "model_resolved_commit": getattr(model.config, "_commit_hash", None),
         "transformers_version": transformers.__version__,
         "dapd_revision": adapter.revision,
+        "dawn_revision": dawn_revision if uses_dawn else None,
         "implementation_notes": [
             "Attention visibility is unchanged from Dream.",
             "DAPD post-RoPE Q/K extraction and token dependency construction are imported from the pinned public checkout.",
@@ -398,6 +451,10 @@ def main() -> None:
             "always_on_coupled_defer starts every region immediately, permits low-confidence regional skips, and uses adjacent positional edges to bound revealed-token staleness. When an endpoint is paused at the gap, its lagging neighbor's ordinary update bypasses the confidence gate.",
             "Coupled deferral has no per-region wall-clock skip deadline: if a parent also skips, the child does not consume positional slack. Four globally empty confidence-deferral iterations trigger one forced leftmost active update solely to prevent a total fixed-point deadlock.",
             "When deferral_until_revealed_tokens is set, confidence deferral is used only until each region reaches that many actually revealed tokens. Positional gap backpressure and the optional tail guard continue for the rest of decoding.",
+            "Regional DAWN strategies load the pinned official DAWN Dream model fork and use its one-forward late-layer averaged attention scores. The model still has full-canvas visibility.",
+            "always_on_dawn_tail_guard applies DAWN's anchor/conflict token selector independently to every unguarded region; always_on_coupled_defer_dawn_tail_guard adds the existing startup deferral and adjacent revealed-token backpressure.",
+            "The regional DAWN selector uses the official GSM8K thresholds (sink 0.03, edge 0.10, induced 0.75, candidate confidence 0.80, high confidence 0.90) unless overridden.",
+            "The public DAWN MIS helper continues for the original candidate count after suppressing conflicts and can therefore select non-candidates. This pilot implements the intended greedy MIS termination when no eligible node remains and records that deviation explicitly.",
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",

@@ -97,6 +97,21 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     float(row.get("mean_field_seconds", 0.0)) for row in selected
                 )
                 / count,
+                "mean_dawn_selection_seconds": sum(
+                    float(row.get("dawn_selection_seconds", 0.0))
+                    for row in selected
+                )
+                / count,
+                "mean_dawn_fallback_region_events": sum(
+                    int(row.get("dawn_fallback_region_events", 0))
+                    for row in selected
+                )
+                / count,
+                "mean_dawn_selected_tokens": sum(
+                    int(row.get("dawn_selected_tokens", 0))
+                    for row in selected
+                )
+                / count,
                 "mean_mean_field_forced_progress_events": sum(
                     int(row.get("mean_field_forced_progress_events", 0))
                     for row in selected

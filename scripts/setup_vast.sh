@@ -10,6 +10,8 @@ DAPD_DIR="external/DAPD"
 DAPD_REVISION="05727b08da4cb4008a275123d7d9885dd5714f7c"
 FLOWBLOCK_DIR="external/FlowBlock"
 FLOWBLOCK_REVISION="8f730a2173140792a4324736efdcba27a2bdee75"
+DAWN_DIR="external/DAWN"
+DAWN_REVISION="19c32c28b5bf0475ccdfad853c74fc885f6410cd"
 HUMANEVAL_DIR="external/HumanEval"
 HUMANEVAL_REVISION="6d43fb980f9fee3c892a914eda09951f772ad10d"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
@@ -43,5 +45,14 @@ if [[ ! -d "$FLOWBLOCK_DIR/.git" ]]; then
 fi
 git -C "$FLOWBLOCK_DIR" fetch origin "$FLOWBLOCK_REVISION"
 git -C "$FLOWBLOCK_DIR" checkout --detach "$FLOWBLOCK_REVISION"
+
+# The official DAWN Dream fork exposes averaged late-layer attention in the
+# same forward that produces logits. Regional DAWN strategies import this
+# source checkout but continue loading the pinned public Dream weights.
+if [[ ! -d "$DAWN_DIR/.git" ]]; then
+  git clone https://github.com/lizhuo-luo/DAWN.git "$DAWN_DIR"
+fi
+git -C "$DAWN_DIR" fetch origin "$DAWN_REVISION"
+git -C "$DAWN_DIR" checkout --detach "$DAWN_REVISION"
 
 echo "Vast environment prepared. Activate with: source $ENV_DIR/bin/activate"

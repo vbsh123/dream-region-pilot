@@ -41,6 +41,8 @@ generation:
 dependency:
   dapd_repo: external/DAPD
   dapd_revision: 05727b08da4cb4008a275123d7d9885dd5714f7c
+  dawn_repo: external/DAWN
+  dawn_revision: 19c32c28b5bf0475ccdfad853c74fc885f6410cd
   layer_ratio: 0.3
   recompute_interval: 4
   matrix: raw
@@ -68,6 +70,13 @@ probe:
     pair_chunk_size: 128
     thresholds: [0.50, 0.70, 0.80, 0.90, 0.95]
     combination_threshold: 0.90
+  # Official DAWN Dream GSM8K operating point from eval_instruct.sh.
+  dawn:
+    sink_threshold: 0.03
+    edge_threshold: 0.10
+    high_confidence_threshold: 0.90
+    induce_threshold: 0.75
+    candidate_confidence_threshold: 0.80
 
 mean_field_baseline:
   block_size: 32

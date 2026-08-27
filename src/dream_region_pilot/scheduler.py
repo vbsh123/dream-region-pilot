@@ -23,10 +23,12 @@ class RegionScheduler:
             "fixed_sequential",
             "always_on",
             "always_on_tail_guard",
+            "always_on_dawn_tail_guard",
             "always_on_bounded_defer",
             "always_on_bounded_defer_tail_guard",
             "always_on_coupled_defer",
             "always_on_coupled_defer_tail_guard",
+            "always_on_coupled_defer_dawn_tail_guard",
             "fixed_lag",
             "wavefront_probe",
             "loose_wavefront",
@@ -81,6 +83,7 @@ class RegionScheduler:
         return self.mode.startswith("controlled_") or self.mode in {
             "always_on_coupled_defer",
             "always_on_coupled_defer_tail_guard",
+            "always_on_coupled_defer_dawn_tail_guard",
         }
 
     @property
@@ -149,6 +152,7 @@ class RegionScheduler:
         if self.mode in {
             "always_on",
             "always_on_tail_guard",
+            "always_on_dawn_tail_guard",
             "always_on_bounded_defer",
             "always_on_bounded_defer_tail_guard",
         }:
@@ -156,6 +160,7 @@ class RegionScheduler:
         if self.mode in {
             "always_on_coupled_defer",
             "always_on_coupled_defer_tail_guard",
+            "always_on_coupled_defer_dawn_tail_guard",
         }:
             return self._controlled_regions(unfinished)
         if self.mode == "fixed_sequential":
@@ -212,6 +217,7 @@ class RegionScheduler:
                 coupled_mode = self.mode in {
                     "always_on_coupled_defer",
                     "always_on_coupled_defer_tail_guard",
+                    "always_on_coupled_defer_dawn_tail_guard",
                 }
                 lead_limit_reached = (
                     parent_lead >= max(1, self.max_progress_gap)
@@ -303,10 +309,12 @@ def parse_strategy(name: str) -> tuple[str, int]:
         "fixed_sequential",
         "always_on",
         "always_on_tail_guard",
+        "always_on_dawn_tail_guard",
         "always_on_bounded_defer",
         "always_on_bounded_defer_tail_guard",
         "always_on_coupled_defer",
         "always_on_coupled_defer_tail_guard",
+        "always_on_coupled_defer_dawn_tail_guard",
         "wavefront_probe",
         "loose_wavefront",
         "flowblock_proxy",
