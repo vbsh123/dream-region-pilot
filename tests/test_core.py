@@ -57,20 +57,20 @@ probe: {deferral_confidence_threshold: 1.1, max_region_deferrals: -1}
         raise AssertionError("invalid bounded deferral settings were accepted")
 
 
-def test_config_accepts_twenty_token_regions(tmp_path):
-    config = tmp_path / "region-20.yaml"
+def test_config_accepts_intermediate_region_sizes(tmp_path):
+    config = tmp_path / "region-25.yaml"
     config.write_text(
         """
 model: {}
 data: {task: gsm8k}
-generation: {region_size: 20, steps: 20, max_new_tokens: 256}
+generation: {region_size: 25, steps: 25, max_new_tokens: 256}
 dependency: {}
 experiment: {}
 """,
         encoding="utf-8",
     )
     loaded = load_config(config)
-    assert loaded["generation"]["region_size"] == 20
+    assert loaded["generation"]["region_size"] == 25
 
 
 def test_config_rejects_negative_deferral_reveal_cutoff(tmp_path):
