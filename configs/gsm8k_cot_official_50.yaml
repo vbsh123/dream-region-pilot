@@ -72,6 +72,10 @@ probe:
     combination_threshold: 0.90
   # Official DAWN Dream GSM8K operating point from eval_instruct.sh.
   dawn:
+    block_length: 32
+    official_temperature: 0.0
+    official_top_p: null
+    official_top_k: null
     sink_threshold: 0.03
     edge_threshold: 0.10
     high_confidence_threshold: 0.90

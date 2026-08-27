@@ -184,6 +184,111 @@ def decode_vanilla(
 
 
 @torch.no_grad()
+def decode_official_dawn(
+    model,
+    tokenizer,
+    prompt: torch.Tensor,
+    generation: dict[str, Any],
+    dawn_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Run DAWN's released sequential-block Dream decoder unchanged.
+
+    The dataset prompt, checkpoint, scoring, seed policy, GPU, and outer timing
+    harness remain those of this pilot. Decoder settings default to DAWN's
+    released Dream GSM8K command rather than the regional hybrid settings.
+    """
+    device = prompt.device
+    block_length = int(dawn_config.get("block_length", 32))
+    generation_length = int(generation["max_new_tokens"])
+    if generation_length % block_length:
+        raise ValueError(
+            "Official DAWN requires max_new_tokens divisible by block_length"
+        )
+    configured_steps = generation_length // block_length
+    attention_mask = prompt.ne(tokenizer.pad_token_id)
+    synchronize(device)
+    started = time.perf_counter()
+    output = model.diffusion_generate(
+        prompt,
+        attention_mask=attention_mask,
+        max_new_tokens=generation_length,
+        steps=configured_steps,
+        alg="dawn",
+        temperature=float(dawn_config.get("official_temperature", 0.0)),
+        top_p=dawn_config.get("official_top_p"),
+        top_k=dawn_config.get("official_top_k"),
+        block_length=block_length,
+        conf_threshold=float(
+            dawn_config.get("candidate_confidence_threshold", 0.80)
+        ),
+        tau_induce=float(dawn_config.get("induce_threshold", 0.75)),
+        tau_sink=float(dawn_config.get("sink_threshold", 0.03)),
+        tau_edge=float(dawn_config.get("edge_threshold", 0.10)),
+        return_dict_in_generate=True,
+    )
+    synchronize(device)
+    elapsed = time.perf_counter() - started
+
+    reported_nfe = None
+    if isinstance(output, tuple) and len(output) == 2:
+        output, reported_nfe = output
+    if reported_nfe is None:
+        raise RuntimeError("Official DAWN decoder did not report its actual NFE")
+    sequences = output.sequences if hasattr(output, "sequences") else output
+    response = sequences[0, prompt.shape[1] :]
+    text, effective_tokens = decode_response(
+        tokenizer, response, generation.get("until")
+    )
+    canvas_tokens = int(response.numel())
+    nfe = int(reported_nfe)
+    return {
+        "generation": text,
+        "response_token_ids": [
+            int(value) for value in response.detach().cpu().tolist()
+        ],
+        "nfe": nfe,
+        "configured_steps": configured_steps,
+        "global_forward_passes": nfe,
+        "average_tokens_committed_per_forward": canvas_tokens / nfe,
+        "canvas_tokens": canvas_tokens,
+        "effective_generated_tokens": effective_tokens,
+        "wall_clock_seconds": elapsed,
+        "canvas_tokens_per_second": (
+            canvas_tokens / elapsed if elapsed > 0 else None
+        ),
+        "effective_tokens_per_second": (
+            effective_tokens / elapsed if elapsed > 0 else None
+        ),
+        "forward_passes_per_second": nfe / elapsed if elapsed > 0 else None,
+        "dependency_recomputations": nfe,
+        "dependency_seconds": 0.0,
+        "mean_field_seconds": 0.0,
+        "dependency_signal_seconds": 0.0,
+        "dawn_selection_seconds": 0.0,
+        "diagnostic_seconds_excluded_from_wall_clock": 0.0,
+        "official_dawn": True,
+        "dawn_config": {
+            "block_length": block_length,
+            "temperature": float(
+                dawn_config.get("official_temperature", 0.0)
+            ),
+            "top_p": dawn_config.get("official_top_p"),
+            "top_k": dawn_config.get("official_top_k"),
+            "sink_threshold": float(dawn_config.get("sink_threshold", 0.03)),
+            "edge_threshold": float(dawn_config.get("edge_threshold", 0.10)),
+            "induce_threshold": float(
+                dawn_config.get("induce_threshold", 0.75)
+            ),
+            "candidate_confidence_threshold": float(
+                dawn_config.get("candidate_confidence_threshold", 0.80)
+            ),
+        },
+        "schedule_approximation": False,
+        "schedule_approximation_name": "official_dawn_sequential_blocks",
+    }
+
+
+@torch.no_grad()
 def decode_mean_field_repro(
     model,
     tokenizer,

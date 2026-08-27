@@ -65,6 +65,7 @@ controlled_combo_dynamic DAPD-intersection-JSD components with pooled selection
 mean_field_repro      paper Algorithm 1 commit policy, exact JSD per active block
 always_on_dawn_tail_guard  regional official-DAWN selector plus terminal guard
 always_on_coupled_defer_dawn_tail_guard  DAWN selector plus coupled startup guard
+official_dawn         pinned released DAWN sequential-block decoder
 flowblock_proxy       Dream-side W=2, theta=0.60 admission proxy
 vanilla               official Dream diffusion_generate
 ```
@@ -331,6 +332,23 @@ and direct high confidence 0.90. Each is exposed as a `--dawn-*` flag. These
 thresholds are applied to raw, untempered probabilities, matching DAWN's
 released temperature-zero setting; token predictions retain the pilot's
 configured Dream sampler for a clean selector ablation.
+
+`official_dawn` is the non-regional control. It invokes the pinned DAWN
+sequential 32-token-block decoder directly with the released Dream GSM8K
+settings: temperature zero, no top-p/top-k filter, candidate confidence 0.80,
+induction 0.75, sink 0.03, and edge 0.10. The checkpoint, GPU, zero-shot prompt,
+50-example subset, scorer, seed reset, and outer wall-clock synchronization are
+the same as the regional runs. Thus it is an official-decoder/matched-harness
+result, not a reproduction of DAWN's different few-shot benchmark protocol.
+
+```bash
+python -m dream_region_pilot.run_gsm8k \
+  --config configs/gsm8k_cot_official_50.yaml \
+  --output-dir outputs/gsm8k_official_dawn_50 \
+  --limit 50 \
+  --strategies official_dawn \
+  --diagnostic-examples 0
+```
 
 Run the intended coupled smoke test with a 0.4 confidence gate and four-token
 progress gap:

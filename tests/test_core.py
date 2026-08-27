@@ -19,7 +19,7 @@ from dream_region_pilot.dependencies import (
     threshold_region_graph,
 )
 from dream_region_pilot.evaluation import summarize
-from dream_region_pilot.decoding import predicted_tail_region
+from dream_region_pilot.decoding import decode_official_dawn, predicted_tail_region
 from dream_region_pilot.regions import build_fixed_regions
 from dream_region_pilot.scheduler import RegionScheduler, parse_strategy
 from dream_region_pilot.mean_field import (
@@ -392,6 +392,56 @@ def test_regional_dawn_thresholds_use_untempered_confidence():
     )
     assert stats[0]["confident"] == 0
     assert stats[0]["fallback"] is True
+
+
+def test_official_dawn_wrapper_uses_released_decoder_settings():
+    class Output:
+        sequences = torch.tensor([[7, 8, 1, 1, 1, 1]])
+
+    class Model:
+        def __init__(self):
+            self.kwargs = None
+
+        def diffusion_generate(self, prompt, **kwargs):
+            self.kwargs = kwargs
+            return Output(), 11
+
+    class Tokenizer:
+        pad_token_id = 0
+        eos_token_id = 9
+
+        @staticmethod
+        def get_vocab():
+            return {}
+
+        @staticmethod
+        def decode(values, skip_special_tokens=True):
+            return "answer"
+
+    model = Model()
+    result = decode_official_dawn(
+        model,
+        Tokenizer(),
+        torch.tensor([[7, 8]]),
+        {
+            "max_new_tokens": 4,
+            "until": [],
+        },
+        {
+            "block_length": 2,
+            "candidate_confidence_threshold": 0.8,
+            "induce_threshold": 0.75,
+            "sink_threshold": 0.03,
+            "edge_threshold": 0.10,
+        },
+    )
+    assert result["nfe"] == 11
+    assert result["configured_steps"] == 2
+    assert model.kwargs["alg"] == "dawn"
+    assert model.kwargs["temperature"] == 0.0
+    assert model.kwargs["top_p"] is None
+    assert model.kwargs["block_length"] == 2
+    assert model.kwargs["conf_threshold"] == 0.8
 
 
 def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():

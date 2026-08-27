@@ -56,6 +56,8 @@ def load_config(path: Path) -> dict[str, Any]:
         if mean_field and int(mean_field.get("topk", 1)) <= 0:
             raise ValueError("probe.mean_field.topk must be positive")
         dawn = probe.get("dawn", {})
+        if int(dawn.get("block_length", 32)) <= 0:
+            raise ValueError("probe.dawn.block_length must be positive")
         for key, default in (
             ("sink_threshold", 0.03),
             ("edge_threshold", 0.10),

@@ -19,7 +19,12 @@ from .benchmarks import (
     score_generation,
 )
 from .config import load_config
-from .decoding import decode_mean_field_repro, decode_regional, decode_vanilla
+from .decoding import (
+    decode_mean_field_repro,
+    decode_official_dawn,
+    decode_regional,
+    decode_vanilla,
+)
 from .dependencies import DAPDDreamAdapter, verify_dawn_checkout
 from .evaluation import write_summary
 
@@ -217,6 +222,7 @@ def main() -> None:
             dawn_config[key] = value
     strategies = args.strategies or list(config["experiment"]["strategies"])
     allowed = set(VANILLA_STEP_OVERRIDES) | {
+        "official_dawn",
         "fixed_sequential",
         "always_on",
         "always_on_tail_guard",
@@ -357,6 +363,14 @@ def main() -> None:
                     generated = decode_vanilla(
                         model, tokenizer, prompt, vanilla_generation
                     )
+                elif strategy == "official_dawn":
+                    generated = decode_official_dawn(
+                        model,
+                        tokenizer,
+                        prompt,
+                        generation=config["generation"],
+                        dawn_config=probe_config.get("dawn", {}),
+                    )
                 elif strategy == "mean_field_repro":
                     generated = decode_mean_field_repro(
                         model,
@@ -452,6 +466,7 @@ def main() -> None:
             "Coupled deferral has no per-region wall-clock skip deadline: if a parent also skips, the child does not consume positional slack. Four globally empty confidence-deferral iterations trigger one forced leftmost active update solely to prevent a total fixed-point deadlock.",
             "When deferral_until_revealed_tokens is set, confidence deferral is used only until each region reaches that many actually revealed tokens. Positional gap backpressure and the optional tail guard continue for the rest of decoding.",
             "Regional DAWN strategies load the pinned official DAWN Dream model fork and use its one-forward late-layer averaged attention scores. The model still has full-canvas visibility.",
+            "official_dawn calls the pinned released DAWN sequential 32-token-block decoder directly with its released Dream GSM8K thresholds, temperature zero, and no top-p/top-k filtering. It changes no regional scheduling code and reports DAWN's returned actual NFE.",
             "always_on_dawn_tail_guard applies DAWN's anchor/conflict token selector independently to every unguarded region; always_on_coupled_defer_dawn_tail_guard adds the existing startup deferral and adjacent revealed-token backpressure.",
             "The regional DAWN selector uses the official GSM8K thresholds (sink 0.03, edge 0.10, induced 0.75, candidate confidence 0.80, high confidence 0.90) unless overridden.",
             "DAWN threshold confidence is computed from raw untempered logits, matching DAWN's released temperature-zero operating point. Token predictions retain this experiment's configured Dream sampler so the ablation changes selection rather than silently changing the benchmark sampling protocol.",
