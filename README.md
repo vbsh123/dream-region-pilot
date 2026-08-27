@@ -499,9 +499,9 @@ Resume an interrupted run with:
 bash scripts/run_gsm8k_50.sh outputs/gsm8k_expanded_50_r32 --resume
 ```
 
-To test another supported fixed region size, copy the YAML and change
-`region_size` and `local_steps` together to 16 or 64. Keep outputs in a new
-directory.
+To test another supported fixed region size, pass `--region-size` with 16, 20,
+32, or 64. Unless `--local-steps` is supplied, the local schedule length is set
+to the selected region size. Keep outputs in a new directory.
 
 The main ablations are also direct command-line flags. For example:
 

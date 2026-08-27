@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--example-indices", type=int, nargs="+")
     parser.add_argument("--strategies", nargs="+")
-    parser.add_argument("--region-size", type=int, choices=(16, 32, 64))
+    parser.add_argument("--region-size", type=int, choices=(16, 20, 32, 64))
     parser.add_argument("--local-steps", type=int)
     parser.add_argument(
         "--dependency-aggregator",
