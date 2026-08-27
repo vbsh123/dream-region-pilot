@@ -57,6 +57,27 @@ probe: {deferral_confidence_threshold: 1.1, max_region_deferrals: -1}
         raise AssertionError("invalid bounded deferral settings were accepted")
 
 
+def test_config_rejects_negative_deferral_reveal_cutoff(tmp_path):
+    config = tmp_path / "invalid-cutoff.yaml"
+    config.write_text(
+        """
+model: {}
+data: {task: gsm8k}
+generation: {region_size: 32, steps: 32, max_new_tokens: 32}
+dependency: {}
+experiment: {}
+probe: {deferral_until_revealed_tokens: -1}
+""",
+        encoding="utf-8",
+    )
+    try:
+        load_config(config)
+    except ValueError as error:
+        assert "deferral_until_revealed_tokens" in str(error)
+    else:
+        raise AssertionError("negative deferral reveal cutoff was accepted")
+
+
 def test_temperature_sampling_uses_multinomial_and_greedy_numeric_fallback(
     monkeypatch,
 ):

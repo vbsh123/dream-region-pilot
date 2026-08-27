@@ -422,6 +422,14 @@ def decode_regional(
     max_global_deferral_iterations = int(
         strategy_probe.get("max_global_deferral_iterations", 4)
     )
+    configured_deferral_cutoff = strategy_probe.get(
+        "deferral_until_revealed_tokens"
+    )
+    deferral_until_revealed_tokens = (
+        int(configured_deferral_cutoff)
+        if configured_deferral_cutoff is not None
+        else None
+    )
     if not 0.0 <= deferral_confidence_threshold <= 1.0:
         raise ValueError("probe.deferral_confidence_threshold must be in [0, 1]")
     if max_region_deferrals < 0:
@@ -429,6 +437,13 @@ def decode_regional(
     if max_global_deferral_iterations <= 0:
         raise ValueError(
             "probe.max_global_deferral_iterations must be positive"
+        )
+    if (
+        deferral_until_revealed_tokens is not None
+        and deferral_until_revealed_tokens < 0
+    ):
+        raise ValueError(
+            "probe.deferral_until_revealed_tokens must be non-negative"
         )
     region_deferral_counts = {region.index: 0 for region in regions}
     global_empty_deferral_streak = 0
@@ -628,6 +643,15 @@ def decode_regional(
                     for region_index in scheduler.last_urgent_regions
                 }
             )
+            if deferral_until_revealed_tokens is not None:
+                for region in active:
+                    if (
+                        scheduler.revealed_tokens(region)
+                        >= deferral_until_revealed_tokens
+                    ):
+                        force_region_reasons.setdefault(
+                            region.index, "deferral_window_closed"
+                        )
             if (
                 global_empty_deferral_streak
                 >= max_global_deferral_iterations
@@ -875,6 +899,11 @@ def decode_regional(
             if mode in coupled_deferral_modes
             else None
         ),
+        "deferral_until_revealed_tokens": (
+            deferral_until_revealed_tokens
+            if mode in coupled_deferral_modes
+            else None
+        ),
         "iterations_with_tail_guard": sum(
             item["guarded_tail_region"] is not None
             for item in tail_guard_timeline
@@ -898,6 +927,13 @@ def decode_regional(
         "global_deadlock_forced_region_events": sum(
             sum(
                 item["action"] == "global_deadlock_forced"
+                for item in timeline_item["decisions"]
+            )
+            for timeline_item in deferral_timeline
+        ),
+        "deferral_window_closed_region_events": sum(
+            sum(
+                item["action"] == "deferral_window_closed_forced"
                 for item in timeline_item["decisions"]
             )
             for timeline_item in deferral_timeline

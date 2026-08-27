@@ -47,6 +47,11 @@ def load_config(path: Path) -> dict[str, Any]:
             raise ValueError(
                 "probe.max_global_deferral_iterations must be positive"
             )
+        deferral_cutoff = probe.get("deferral_until_revealed_tokens")
+        if deferral_cutoff is not None and int(deferral_cutoff) < 0:
+            raise ValueError(
+                "probe.deferral_until_revealed_tokens must be non-negative"
+            )
         mean_field = probe.get("mean_field", {})
         if mean_field and int(mean_field.get("topk", 1)) <= 0:
             raise ValueError("probe.mean_field.topk must be positive")

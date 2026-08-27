@@ -285,7 +285,10 @@ update is forced even when it is below the confidence threshold. If both
 endpoints skip, their relative gap does not change. Four entirely empty
 confidence-deferral iterations force the leftmost active region once, avoiding
 a whole-canvas fixed-point deadlock. The `_tail_guard` form additionally uses
-the provisional terminal-region guard.
+the provisional terminal-region guard. Optionally,
+`--deferral-until-revealed-tokens 2` limits confidence deferral to the first
+two actually revealed tokens of each region; after that, the region's ordinary
+updates bypass the confidence gate while positional gap control remains active.
 
 Run the intended coupled smoke test with a 0.4 confidence gate and four-token
 progress gap:

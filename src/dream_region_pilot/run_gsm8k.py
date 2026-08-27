@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--deferral-confidence-threshold", type=float)
     parser.add_argument("--max-region-deferrals", type=int)
     parser.add_argument("--max-global-deferral-iterations", type=int)
+    parser.add_argument("--deferral-until-revealed-tokens", type=int)
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
@@ -161,6 +162,9 @@ def main() -> None:
         "deferral_confidence_threshold": args.deferral_confidence_threshold,
         "max_region_deferrals": args.max_region_deferrals,
         "max_global_deferral_iterations": args.max_global_deferral_iterations,
+        "deferral_until_revealed_tokens": (
+            args.deferral_until_revealed_tokens
+        ),
     }
     for key, value in probe_overrides.items():
         if value is not None:
@@ -391,6 +395,7 @@ def main() -> None:
             "always_on_bounded_defer_tail_guard combines bounded regional deferral with the identical predicted terminal-region guard; it has no admission window, parent graph, or positional backpressure.",
             "always_on_coupled_defer starts every region immediately, permits low-confidence regional skips, and uses adjacent positional edges to bound revealed-token staleness. When an endpoint is paused at the gap, its lagging neighbor's ordinary update bypasses the confidence gate.",
             "Coupled deferral has no per-region wall-clock skip deadline: if a parent also skips, the child does not consume positional slack. Four globally empty confidence-deferral iterations trigger one forced leftmost active update solely to prevent a total fixed-point deadlock.",
+            "When deferral_until_revealed_tokens is set, confidence deferral is used only until each region reaches that many actually revealed tokens. Positional gap backpressure and the optional tail guard continue for the rest of decoding.",
             "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",
