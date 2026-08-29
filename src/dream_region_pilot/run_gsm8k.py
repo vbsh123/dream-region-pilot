@@ -13,6 +13,7 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from .benchmarks import (
+    build_fewshot_contexts,
     gsm8k_cot_score_details,
     load_benchmark,
     prepare_example,
@@ -129,12 +130,21 @@ def encode_prompt(
     device: torch.device,
     *,
     add_special_tokens: bool = False,
+    apply_chat_template: bool = True,
+    prepend_bos_token: bool = False,
 ) -> torch.Tensor:
-    rendered = tokenizer.apply_chat_template(
-        [{"role": "user", "content": prompt}],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    if apply_chat_template:
+        rendered = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        rendered = prompt
+        if prepend_bos_token:
+            if tokenizer.bos_token is None:
+                raise ValueError("Tokenizer has no BOS token to prepend")
+            rendered = tokenizer.bos_token + rendered
     return tokenizer.encode(
         rendered,
         add_special_tokens=add_special_tokens,
@@ -232,6 +242,9 @@ def main() -> None:
     else:
         dataset = load_benchmark(config["data"], args.limit)
         dataset_items = list(enumerate(dataset))
+    fewshot_contexts = build_fewshot_contexts(
+        config["data"], [index for index, _ in dataset_items]
+    )
     source_config = config["sources"]
     uses_dawn = any("dawn" in strategy for strategy in strategies)
     dawn_repo = Path(source_config.get("dawn_repo", "external/DAWN"))
@@ -261,15 +274,21 @@ def main() -> None:
         for run_position, (example_index, source) in enumerate(dataset_items):
             example = prepare_example(config["data"], source)
             question = example.question
-            prompt_text = str(config["data"]["prompt_template"]).format(
-                question=question
-            )
+            prompt_text = fewshot_contexts.get(example_index, "") + str(
+                config["data"]["prompt_template"]
+            ).format(question=question)
             prompt = encode_prompt(
                 tokenizer,
                 prompt_text,
                 model.device,
                 add_special_tokens=bool(
                     config["data"].get("add_special_tokens", False)
+                ),
+                apply_chat_template=bool(
+                    config["data"].get("apply_chat_template", True)
+                ),
+                prepend_bos_token=bool(
+                    config["data"].get("prepend_bos_token", False)
                 ),
             )
             reference = example.reference_answer
@@ -358,6 +377,10 @@ def main() -> None:
                     "seed": seed,
                     "question": question,
                     "reference_answer": reference,
+                    "num_fewshot": int(config["data"].get("num_fewshot", 0)),
+                    "apply_chat_template": bool(
+                        config["data"].get("apply_chat_template", True)
+                    ),
                     "predicted_answer": prediction,
                     "correct": correct,
                     "scoring_method": scoring_method,

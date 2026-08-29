@@ -2,6 +2,7 @@ import torch
 
 from dream_region_pilot.benchmarks import (
     _humaneval_solution,
+    build_fewshot_contexts,
     gsm8k_cot_score_details,
     prepare_example,
     score_generation,
@@ -33,6 +34,41 @@ def test_fixed_regions_exclude_prompt_by_construction():
         tuple(range(32, 64)),
         tuple(range(64, 70)),
     ]
+
+
+def test_fewshot_contexts_match_lm_eval_continuous_sampler(monkeypatch):
+    documents = [
+        {"question": f"demo-{index}", "answer": f"work-{index} #### {index}"}
+        for index in range(10)
+    ]
+
+    def fake_load_dataset(*args, **kwargs):
+        assert kwargs["split"] == "train"
+        return documents
+
+    monkeypatch.setattr(
+        "dream_region_pilot.benchmarks.load_dataset", fake_load_dataset
+    )
+    contexts = build_fewshot_contexts(
+        {
+            "task": "gsm8k",
+            "dataset": "ignored",
+            "subset": "main",
+            "num_fewshot": 2,
+            "fewshot_split": "train",
+            "fewshot_seed": 1234,
+            "fewshot_prompt_template": "Question: {question}\nAnswer:",
+            "target_delimiter": " ",
+            "fewshot_delimiter": "\n\n",
+        },
+        [0, 2],
+    )
+
+    assert contexts[0].startswith("Question: demo-7\nAnswer: work-7")
+    assert "Question: demo-1\nAnswer: work-1" in contexts[0]
+    # Index one is not requested, but its random draw must still be consumed.
+    assert contexts[2].startswith("Question: demo-9\nAnswer: work-9")
+    assert "Question: demo-0\nAnswer: work-0" in contexts[2]
 
 
 def test_local_dream_logit_shift_matches_position_alignment():

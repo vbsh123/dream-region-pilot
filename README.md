@@ -115,6 +115,27 @@ lm-eval-style GSM8K-CoT prompt and flexible extraction. The paired harness
 reseeds every strategy for every example; it is suitable for attribution but
 does not consume one continuous RNG stream exactly like upstream lm-eval.
 
+For a separate comparison under DAWN's released Dream GSM8K baseline protocol
+(lm-eval 0.4.8 `gsm8k`, five train demonstrations, no chat template, BOS prefix,
+temperature zero), run:
+
+```bash
+python -m dream_region_pilot.run_gsm8k \
+  --config configs/gsm8k_dawn_5shot.yaml \
+  --output-dir outputs/gsm8k_dawn_protocol_terminal_50 \
+  --limit 50 \
+  --strategies \
+    vanilla \
+    always_on_coupled_defer_tail_guard \
+    always_on_coupled_defer_stop_filter \
+    always_on_coupled_defer_stop_defer \
+  --diagnostic-examples 0
+```
+
+This protocol is intentionally separate from the official Dream zero-shot CoT
+configuration. Its five-shot sampler uses lm-eval's seed 1234 and advances once
+per test document, including skipped indices in targeted diagnostic runs.
+
 ## Other benchmarks
 
 The same runner supports ASDiv, MATH-500, and HumanEval through their config

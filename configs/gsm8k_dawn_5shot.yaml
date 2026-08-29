@@ -1,0 +1,94 @@
+# Reproduce DAWN's released Dream-v0-Instruct-7B GSM8K baseline protocol.
+# Source: external/DAWN/dream/eval_instruct.sh at pinned revision 19c32c2.
+model:
+  name_or_path: Dream-org/Dream-v0-Instruct-7B
+  revision: 05334cb9faaf763692dcf9d8737c642be2b2a6ae
+  dtype: bfloat16
+  device: cuda
+  trust_remote_code: true
+
+data:
+  task: gsm8k
+  protocol: lm_eval_gsm8k_cot
+  dataset: openai/gsm8k
+  subset: main
+  split: test
+  limit: 50
+  num_fewshot: 5
+  fewshot_split: train
+  fewshot_seed: 1234
+  prompt_template: |-
+    Question: {question}
+    Answer:
+  fewshot_prompt_template: |-
+    Question: {question}
+    Answer:
+  target_delimiter: " "
+  fewshot_delimiter: "\n\n"
+  # DAWN's evaluator prepends Dream's BOS token but does not apply the chat
+  # template. Tokenization otherwise keeps its default special-token path.
+  apply_chat_template: false
+  prepend_bos_token: true
+  add_special_tokens: true
+
+generation:
+  max_new_tokens: 256
+  steps: 256
+  region_size: 32
+  local_steps: 32
+  eps: 0.001
+  temperature: 0.0
+  top_p: null
+  top_k: null
+  commit_policy: entropy
+  alg_temp: 0.0
+  seed: 1234
+  until:
+    - "Question:"
+    - "</s>"
+    - "<|im_end|>"
+
+sources:
+  dawn_repo: external/DAWN
+  dawn_revision: 19c32c28b5bf0475ccdfad853c74fc885f6410cd
+
+probe:
+  max_active_regions: 8
+  spawn_readiness: 0.15
+  readiness_confidence_threshold: 0.50
+  max_progress_gap: 4
+  deferral_confidence_threshold: 0.40
+  stop_filter_confidence_threshold: 0.70
+  deferral_until_revealed_tokens: 2
+  max_region_deferrals: 4
+  max_global_deferral_iterations: 4
+  flowblock_proxy:
+    max_active_regions: 2
+    spawn_readiness: 0.60
+    readiness_confidence_threshold: 0.50
+  dawn:
+    block_length: 32
+    official_temperature: 0.0
+    official_top_p: null
+    official_top_k: null
+    sink_threshold: 0.03
+    edge_threshold: 0.10
+    high_confidence_threshold: 0.90
+    induce_threshold: 0.75
+    candidate_confidence_threshold: 0.80
+
+mean_field_baseline:
+  block_size: 32
+  threshold: 0.90
+  iterations: 2
+  pair_chunk_size: 16
+
+experiment:
+  strategies:
+    - vanilla
+    - always_on_coupled_defer_tail_guard
+    - always_on_coupled_defer_stop_filter
+    - always_on_coupled_defer_stop_defer
+  rotate_strategy_order: true
+  diagnostic_examples: 0
+  diagnostic_snapshot_interval: 4

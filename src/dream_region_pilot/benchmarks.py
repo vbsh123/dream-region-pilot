@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import re
 import sys
 import textwrap
@@ -30,6 +31,58 @@ def load_benchmark(data: dict[str, Any], limit_override: int | None):
         )
     limit = int(limit_override if limit_override is not None else data["limit"])
     return dataset.select(range(min(limit, len(dataset))))
+
+
+def build_fewshot_contexts(
+    data: dict[str, Any], example_indices: list[int]
+) -> dict[int, str]:
+    """Reproduce lm-eval's deterministic default few-shot sampler.
+
+    lm-eval 0.4.8 keeps one ``random.Random`` instance per task and samples a
+    fresh set of demonstrations for every evaluation document.  Advancing the
+    generator through all preceding document indices keeps ``--limit``,
+    ``--resume``, and ``--example-indices`` runs consistent with that behavior.
+    """
+    count = int(data.get("num_fewshot", 0))
+    if count == 0 or not example_indices:
+        return {}
+    if str(data.get("task", "gsm8k")) != "gsm8k":
+        raise ValueError(
+            "Few-shot prompt construction currently supports GSM8K only"
+        )
+
+    subset = data.get("subset")
+    split = str(data.get("fewshot_split", "train"))
+    if subset in (None, ""):
+        training = load_dataset(data["dataset"], split=split)
+    else:
+        training = load_dataset(data["dataset"], str(subset), split=split)
+    documents = list(training)
+    if count > len(documents):
+        raise ValueError(
+            f"Requested {count} few-shot examples from only {len(documents)} documents"
+        )
+
+    requested = set(example_indices)
+    rng = random.Random(int(data.get("fewshot_seed", 1234)))
+    template = str(
+        data.get("fewshot_prompt_template", "Question: {question}\nAnswer:")
+    )
+    target_delimiter = str(data.get("target_delimiter", " "))
+    fewshot_delimiter = str(data.get("fewshot_delimiter", "\n\n"))
+    contexts: dict[int, str] = {}
+    for example_index in range(max(requested) + 1):
+        selected = rng.sample(documents, count)
+        if example_index not in requested:
+            continue
+        contexts[example_index] = "".join(
+            template.format(question=str(document["question"]))
+            + target_delimiter
+            + str(document["answer"])
+            + fewshot_delimiter
+            for document in selected
+        )
+    return contexts
 
 
 def prepare_example(data: dict[str, Any], source: dict[str, Any]) -> BenchmarkExample:
