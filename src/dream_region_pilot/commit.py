@@ -116,11 +116,15 @@ def commit_active_regions(
     stop_token_ids: set[int] | None = None,
     stop_protected_regions: set[int] | None = None,
     stop_protection_decisions: list[dict[str, Any]] | None = None,
+    stop_filter_confidence_threshold: float = 0.4,
+    max_response_position_exclusive: int | None = None,
 ) -> dict[int, list[int]]:
     if stop_protection_mode not in {None, "filter", "defer"}:
         raise ValueError("stop_protection_mode must be None, filter, or defer")
     if stop_protection_mode is not None and not stop_token_ids:
         raise ValueError("stop_token_ids is required for stop protection")
+    if not 0.0 <= stop_filter_confidence_threshold <= 1.0:
+        raise ValueError("stop_filter_confidence_threshold must be in [0, 1]")
     if deferral_confidence_threshold is not None:
         if not 0.0 <= deferral_confidence_threshold <= 1.0:
             raise ValueError("deferral_confidence_threshold must be in [0, 1]")
@@ -153,6 +157,20 @@ def commit_active_regions(
     full_raw_top1_predictions = tokens.clone()
     if stop_protection_mode == "defer":
         full_raw_top1_predictions[absolute_mask] = masked_logits.argmax(dim=-1)
+    full_raw_proposed_probability = torch.zeros(
+        tokens.shape,
+        dtype=torch.float32,
+        device=tokens.device,
+    )
+    if stop_protection_mode == "filter":
+        raw_logits = masked_logits.float()
+        proposed_logits = raw_logits.gather(
+            -1, predictions.unsqueeze(-1)
+        ).squeeze(-1)
+        raw_proposed_probability = (
+            proposed_logits - torch.logsumexp(raw_logits, dim=-1)
+        ).exp()
+        full_raw_proposed_probability[absolute_mask] = raw_proposed_probability
     full_raw_top1_probability = torch.zeros(
         tokens.shape,
         dtype=torch.float32,
@@ -172,6 +190,10 @@ def commit_active_regions(
             region.token_indices, dtype=torch.long, device=tokens.device
         )
         masked_relative = relative[response_mask[relative]]
+        if max_response_position_exclusive is not None:
+            masked_relative = masked_relative[
+                masked_relative < max_response_position_exclusive
+            ]
         count = local_transfer_count(
             int(masked_relative.numel()),
             schedule_step=region.schedule_step,
@@ -212,12 +234,28 @@ def commit_active_regions(
         if protected:
             for stop_id in stop_token_ids or set():
                 stop_candidate_mask |= stop_test_predictions == stop_id
+                if stop_protection_mode == "defer":
+                    # A low-temperature sample can still differ from raw
+                    # top-1. Never let such a sampled stop bypass protection.
+                    stop_candidate_mask |= candidate_predictions == stop_id
+        low_confidence_candidate_mask = torch.zeros_like(
+            candidate_predictions, dtype=torch.bool
+        )
+        if protected and stop_protection_mode == "filter":
+            candidate_probabilities = full_raw_proposed_probability[
+                0, candidate_absolute
+            ]
+            low_confidence_candidate_mask = (
+                candidate_probabilities < stop_filter_confidence_threshold
+            )
 
         selection_pool = torch.arange(
             masked_relative.numel(), device=tokens.device
         )
         if protected and stop_protection_mode == "filter":
-            selection_pool = selection_pool[~stop_candidate_mask]
+            selection_pool = selection_pool[
+                ~stop_candidate_mask & ~low_confidence_candidate_mask
+            ]
         selected_count = min(count, int(selection_pool.numel()))
         if selected_count > 0:
             pool_scores = scores[selection_pool]
@@ -258,6 +296,7 @@ def commit_active_regions(
 
         if protected and stop_protection_mode == "filter" and bool(
             stop_candidate_mask.any().item()
+            or low_confidence_candidate_mask.any().item()
         ):
             hold_schedule = selected_count < count
             if stop_protection_decisions is not None:
@@ -277,6 +316,12 @@ def commit_active_regions(
                         "committed_quota": selected_count,
                         "stop_candidates": int(
                             stop_candidate_mask.sum().item()
+                        ),
+                        "low_confidence_candidates": int(
+                            low_confidence_candidate_mask.sum().item()
+                        ),
+                        "confidence_threshold": (
+                            stop_filter_confidence_threshold
                         ),
                         "hold_schedule": hold_schedule,
                     }

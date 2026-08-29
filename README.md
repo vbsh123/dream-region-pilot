@@ -43,12 +43,15 @@ The most useful code-reading path is:
 - `always_on_coupled_defer{,_tail_guard}` starts every region immediately,
   applies startup confidence deferral, and uses adjacent positional
   backpressure to bound revealed-token drift.
-- `always_on_coupled_defer_stop_filter` keeps stop tokens masked until the
-  region's left prefix finishes and backfills its quota with non-stop tokens.
+- `always_on_coupled_defer_stop_filter` lets only the predicted terminal
+  region backfill a stop proposal with non-stop tokens whose proposed-token
+  probability clears a configurable threshold.
 - `always_on_coupled_defer_stop_defer` instead skips the whole regional update
   when a position in its ordinary selected quota has a stop token as raw
-  top-1; it does not backfill.
-  In both variants, stop stalls override the normal maximum-gap force.
+  top-1 or as the actual sampled proposal; it does not backfill.
+  In both variants, later regions remain excluded, stop stalls override the
+  normal maximum-gap force, and a committed stop latches the endpoint so its
+  suffix does not need to be decoded.
 - `loose_wavefront` admits at most one new region per iteration with the
   configured confidence-readiness gate.
 - `controlled_position{,_tail_guard}` combines that admission rule with
@@ -101,6 +104,7 @@ python -m dream_region_pilot.run_gsm8k \
   --readiness-confidence-threshold 0.5 \
   --max-progress-gap 4 \
   --deferral-confidence-threshold 0.4 \
+  --stop-filter-confidence-threshold 0.4 \
   --deferral-until-revealed-tokens 2 \
   --max-global-deferral-iterations 4 \
   --diagnostic-examples 3

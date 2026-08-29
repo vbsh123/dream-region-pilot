@@ -56,6 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--readiness-confidence-threshold", type=float)
     parser.add_argument("--max-progress-gap", type=int)
     parser.add_argument("--deferral-confidence-threshold", type=float)
+    parser.add_argument("--stop-filter-confidence-threshold", type=float)
     parser.add_argument("--max-region-deferrals", type=int)
     parser.add_argument("--max-global-deferral-iterations", type=int)
     parser.add_argument("--deferral-until-revealed-tokens", type=int)
@@ -159,6 +160,9 @@ def main() -> None:
         "readiness_confidence_threshold": args.readiness_confidence_threshold,
         "max_progress_gap": args.max_progress_gap,
         "deferral_confidence_threshold": args.deferral_confidence_threshold,
+        "stop_filter_confidence_threshold": (
+            args.stop_filter_confidence_threshold
+        ),
         "max_region_deferrals": args.max_region_deferrals,
         "max_global_deferral_iterations": args.max_global_deferral_iterations,
         "deferral_until_revealed_tokens": (
@@ -397,9 +401,11 @@ def main() -> None:
             "always_on_coupled_defer starts every region immediately, permits low-confidence regional skips, and uses adjacent positional edges to bound revealed-token staleness. When an endpoint is paused at the gap, its lagging neighbor's ordinary update bypasses the confidence gate.",
             "Coupled deferral has no per-region wall-clock skip deadline: if a parent also skips, the child does not consume positional slack. Four globally empty confidence-deferral iterations trigger one forced leftmost active update solely to prevent a total fixed-point deadlock.",
             "When deferral_until_revealed_tokens is set, confidence deferral is used only until each region reaches that many actually revealed tokens. Positional gap backpressure and the optional tail guard continue for the rest of decoding.",
-            "always_on_coupled_defer_stop_filter replaces the coarse tail guard with token-level stop filtering: while a region has any unfinished region to its left, sampled EOS/EOT/IM_END proposals are excluded and the ordinary regional quota is backfilled with the strongest available non-stop proposals.",
-            "always_on_coupled_defer_stop_defer instead preserves the ordinary regional position selection and defers its entire local transition whenever a selected position's raw top-1 token is EOS/EOT/IM_END. It does not backfill from lower-ranked positions.",
-            "Stop protection has priority over confidence and gap forcing. A region stalled by stop protection temporarily exempts its left neighbor from the maximum-lead pause, allowing the unfinished prefix to complete; the stalled child is still prevented from outrunning its parent.",
+            "The two stop-aware strategies retain the coarse guard for every region strictly after the earliest predicted terminal region, but allow that terminal region itself to participate while its left prefix is unfinished.",
+            "always_on_coupled_defer_stop_filter excludes sampled EOS/EOT/IM_END proposals inside that terminal region and backfills the ordinary quota only with non-stop proposals whose raw proposed-token probability clears stop_filter_confidence_threshold.",
+            "always_on_coupled_defer_stop_defer instead preserves the ordinary regional position selection and defers its entire local transition whenever a selected position's raw top-1 or sampled token is EOS/EOT/IM_END. It does not backfill from lower-ranked positions.",
+            "Stop protection has priority over confidence and gap forcing. A terminal region stalled by stop protection temporarily exempts its left neighbor from the maximum-lead pause, allowing the unfinished prefix to complete; the stalled child is still prevented from outrunning its parent.",
+            "For the two stop-aware strategies only, the first actually committed stop token latches the endpoint. Positions after it are ignored, holes before it continue decoding, and generation terminates once that prefix contains no masks. Synthetic suffix completion is not counted as model commitment.",
             "Regional DAWN strategies load the pinned official DAWN Dream model fork and use its one-forward late-layer averaged attention scores. The model still has full-canvas visibility.",
             "official_dawn calls the pinned released DAWN sequential 32-token-block decoder directly with its released Dream GSM8K thresholds, temperature zero, and no top-p/top-k filtering. It changes no regional scheduling code and reports DAWN's returned actual NFE.",
             "always_on_dawn_tail_guard applies DAWN's anchor/conflict token selector independently to every unguarded region; always_on_coupled_defer_dawn_tail_guard adds the existing startup deferral and adjacent revealed-token backpressure.",

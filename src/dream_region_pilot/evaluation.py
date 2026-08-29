@@ -136,6 +136,25 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     for row in selected
                 )
                 / count,
+                "mean_stop_low_confidence_candidate_events": sum(
+                    int(
+                        row.get(
+                            "stop_low_confidence_candidate_events", 0
+                        )
+                    )
+                    for row in selected
+                )
+                / count,
+                "early_stop_termination_rate": sum(
+                    int(bool(row.get("early_stop_terminated", False)))
+                    for row in selected
+                )
+                / count,
+                "mean_ignored_suffix_tokens": sum(
+                    int(row.get("ignored_suffix_tokens", 0))
+                    for row in selected
+                )
+                / count,
                 "mean_iterations_with_deferral": sum(
                     int(row.get("iterations_with_deferral", 0))
                     for row in selected

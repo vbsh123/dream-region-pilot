@@ -39,6 +39,13 @@ def load_config(path: Path) -> dict[str, Any]:
             raise ValueError(
                 "probe.deferral_confidence_threshold must be in [0, 1]"
             )
+        stop_filter_threshold = float(
+            probe.get("stop_filter_confidence_threshold", 0.4)
+        )
+        if not 0.0 <= stop_filter_threshold <= 1.0:
+            raise ValueError(
+                "probe.stop_filter_confidence_threshold must be in [0, 1]"
+            )
         if int(probe.get("max_region_deferrals", 4)) < 0:
             raise ValueError("probe.max_region_deferrals must be non-negative")
         if int(probe.get("max_global_deferral_iterations", 4)) <= 0:

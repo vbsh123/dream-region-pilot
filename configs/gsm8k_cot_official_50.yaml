@@ -51,6 +51,7 @@ probe:
   max_progress_gap: 4
   # Only each region's first two actually revealed tokens use this gate.
   deferral_confidence_threshold: 0.40
+  stop_filter_confidence_threshold: 0.40
   deferral_until_revealed_tokens: 2
   max_region_deferrals: 4
   max_global_deferral_iterations: 4

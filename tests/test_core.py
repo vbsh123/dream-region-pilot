@@ -780,9 +780,40 @@ def test_stop_filter_backfills_with_best_non_stop_candidate():
             "scheduled_quota": 1,
             "committed_quota": 1,
             "stop_candidates": 1,
+            "low_confidence_candidates": 0,
+            "confidence_threshold": 0.4,
             "hold_schedule": False,
         }
     ]
+
+
+def test_stop_filter_holds_when_non_stop_candidates_miss_threshold():
+    regions, mask_id, tokens, logits = _stop_protection_fixture()
+    decisions = []
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        stop_protection_mode="filter",
+        stop_token_ids={3},
+        stop_protected_regions={0},
+        stop_protection_decisions=decisions,
+        stop_filter_confidence_threshold=1.0,
+    )
+    assert committed == {0: []}
+    assert tokens.tolist() == [[4, 4, 4, 4]]
+    assert decisions[0]["action"] == "stop_filtered_empty"
+    assert decisions[0]["hold_schedule"] is True
+    assert decisions[0]["low_confidence_candidates"] == 4
 
 
 def test_stop_defer_beats_gap_force_and_does_not_backfill():
@@ -834,6 +865,28 @@ def test_stop_defer_allows_stop_after_left_prefix_finishes():
     )
     assert committed == {0: [0]}
     assert tokens.tolist() == [[3, 4, 4, 4]]
+
+
+def test_latched_endpoint_prevents_suffix_commitment_inside_same_region():
+    regions, mask_id, tokens, logits = _stop_protection_fixture()
+    regions[0].schedule_step = 3
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        max_response_position_exclusive=2,
+    )
+    assert committed == {0: [0, 1]}
+    assert tokens.tolist() == [[3, 0, 4, 4]]
 
 
 def test_predicted_tail_region_uses_earliest_masked_stop():

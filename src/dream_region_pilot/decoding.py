@@ -558,14 +558,30 @@ def decode_regional(
     dawn_selection_seconds = 0.0
     dawn_selector_timeline: list[dict[str, Any]] = []
     stop_stalled_regions: set[int] = set()
+    accepted_stop_position: int | None = None
+    accepted_stop_iteration: int | None = None
+    stop_filter_confidence_threshold = float(
+        strategy_probe.get("stop_filter_confidence_threshold", 0.4)
+    )
+    if not 0.0 <= stop_filter_confidence_threshold <= 1.0:
+        raise ValueError(
+            "probe.stop_filter_confidence_threshold must be in [0, 1]"
+        )
 
     synchronize(device)
     started = time.perf_counter()
     maximum_iterations = scheduler_local_steps * (len(regions) + 2)
     if mode in coupled_deferral_modes:
         maximum_iterations *= max_global_deferral_iterations + 1
-    while bool((tokens[:, prompt_length:] == mask_id).any()):
+    while True:
         response_mask = tokens[:, prompt_length:] == mask_id
+        relevant_mask = (
+            response_mask
+            if accepted_stop_position is None
+            else response_mask[:, :accepted_stop_position]
+        )
+        if not bool(relevant_mask.any()):
+            break
         dawn_attention = None
         if uses_dawn_selector:
             logits, dawn_attention = adapter.forward_with_dawn_attention(
@@ -590,14 +606,15 @@ def decode_regional(
 
         provisional_tail = None
         guarded_tail = None
-        if mode in {
+        tail_detection_modes = {
             "always_on_tail_guard",
             "always_on_dawn_tail_guard",
             "always_on_bounded_defer_tail_guard",
             "always_on_coupled_defer_tail_guard",
             "always_on_coupled_defer_dawn_tail_guard",
             "controlled_position_tail_guard",
-        }:
+        } | set(stop_protection_modes)
+        if mode in tail_detection_modes:
             provisional_tail = predicted_tail_region(
                 logits,
                 prompt_length=prompt_length,
@@ -613,9 +630,26 @@ def decode_regional(
             region.index: scheduler.revealed_tokens(region) for region in regions
         }
         gap_exempt_children_this_iteration = set(stop_stalled_regions)
+        max_region_exclusive = guarded_tail
+        if mode in stop_protection_modes and guarded_tail is not None:
+            # Allow only the predicted terminal region to make protected
+            # progress. Everything strictly after it remains excluded exactly
+            # as in the coarse tail guard.
+            max_region_exclusive = guarded_tail + 1
+        if accepted_stop_position is not None:
+            endpoint_region_exclusive = next(
+                region.index + 1
+                for region in regions
+                if accepted_stop_position in region.token_indices
+            )
+            max_region_exclusive = (
+                endpoint_region_exclusive
+                if max_region_exclusive is None
+                else min(max_region_exclusive, endpoint_region_exclusive)
+            )
         active = scheduler.regions_allowed_to_advance(
             scheduler_local_steps,
-            max_region_exclusive=guarded_tail,
+            max_region_exclusive=max_region_exclusive,
             progress_gap_exempt_children=gap_exempt_children_this_iteration,
         )
         if not active:
@@ -651,12 +685,8 @@ def decode_regional(
         dawn_selector_stats: list[dict[str, Any]] = []
         stop_protection_decisions: list[dict[str, Any]] = []
         stop_protected_regions: set[int] = set()
-        if mode in stop_protection_modes:
-            unfinished_prefix = False
-            for region in regions:
-                if unfinished_prefix:
-                    stop_protected_regions.add(region.index)
-                unfinished_prefix = unfinished_prefix or not region.done
+        if mode in stop_protection_modes and guarded_tail is not None:
+            stop_protected_regions.add(guarded_tail)
         if uses_dawn_selector:
             if dawn_attention is None:
                 raise RuntimeError("DAWN selector has no attention matrix")
@@ -722,6 +752,10 @@ def decode_regional(
                 stop_token_ids=termination_ids,
                 stop_protected_regions=stop_protected_regions,
                 stop_protection_decisions=stop_protection_decisions,
+                stop_filter_confidence_threshold=(
+                    stop_filter_confidence_threshold
+                ),
+                max_response_position_exclusive=accepted_stop_position,
             )
         commitment_details: list[dict[str, Any]] = []
         if diagnostics is not None:
@@ -772,15 +806,37 @@ def decode_regional(
         committed_this_forward = sum(
             len(value) for value in committed.values()
         )
+        committed_stop_positions = (
+            sorted(
+                position
+                for positions in committed.values()
+                for position in positions
+                if int(tokens[0, prompt_length + position].item())
+                in termination_ids
+            )
+            if mode in stop_protection_modes
+            else []
+        )
+        if committed_stop_positions:
+            earliest_new_stop = committed_stop_positions[0]
+            if (
+                accepted_stop_position is None
+                or earliest_new_stop < accepted_stop_position
+            ):
+                accepted_stop_position = earliest_new_stop
+                accepted_stop_iteration = nfe
         tokens_committed_per_forward.append(committed_this_forward)
         if mode in coupled_deferral_modes:
             if committed_this_forward == 0 and deferred_regions:
                 global_empty_deferral_streak += 1
             else:
                 global_empty_deferral_streak = 0
+        effective_remaining_mask = tokens[0, prompt_length:] == mask_id
+        if accepted_stop_position is not None:
+            effective_remaining_mask = effective_remaining_mask.clone()
+            effective_remaining_mask[accepted_stop_position:] = False
         refresh_remaining_masks(
-            regions,
-            (tokens[0, prompt_length:] == mask_id).detach().cpu().tolist(),
+            regions, effective_remaining_mask.detach().cpu().tolist()
         )
         newly_admitted = scheduler.maybe_admit_next(readiness_by_region)
         if newly_admitted:
@@ -818,6 +874,8 @@ def decode_regional(
                 gap_exempt_children_this_iteration
             ),
             "next_stop_gap_exempt_children": sorted(stop_stalled_regions),
+            "accepted_stop_position": accepted_stop_position,
+            "accepted_stop_iteration": accepted_stop_iteration,
         }
         if scheduler.is_controlled:
             control_timeline.append(control_state)
@@ -962,6 +1020,19 @@ def decode_regional(
         "tail_guard_timeline": tail_guard_timeline,
         "deferral_timeline": deferral_timeline,
         "stop_protection_timeline": stop_protection_timeline,
+        "stop_filter_confidence_threshold": (
+            stop_filter_confidence_threshold
+            if mode == "always_on_coupled_defer_stop_filter"
+            else None
+        ),
+        "accepted_stop_position": accepted_stop_position,
+        "accepted_stop_iteration": accepted_stop_iteration,
+        "early_stop_terminated": accepted_stop_position is not None,
+        "ignored_suffix_tokens": (
+            generation_length - accepted_stop_position - 1
+            if accepted_stop_position is not None
+            else 0
+        ),
         "deferral_confidence_threshold": (
             deferral_confidence_threshold if uses_bounded_deferral else None
         ),
@@ -994,6 +1065,11 @@ def decode_regional(
         ),
         "stop_filtered_candidate_events": sum(
             int(decision["stop_candidates"])
+            for item in stop_protection_timeline
+            for decision in item["decisions"]
+        ),
+        "stop_low_confidence_candidate_events": sum(
+            int(decision.get("low_confidence_candidates", 0))
             for item in stop_protection_timeline
             for decision in item["decisions"]
         ),
