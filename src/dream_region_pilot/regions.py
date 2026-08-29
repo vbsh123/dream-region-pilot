@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -12,10 +12,9 @@ class Region:
 
     index: int
     token_indices: tuple[int, ...]
-    parents: set[int] = field(default_factory=set)
     clock: int = 0
     schedule_step: int = 0
-    remaining_mask_indices: tuple[int, ...] = field(default_factory=tuple)
+    remaining_mask_indices: tuple[int, ...] = ()
 
     @property
     def done(self) -> bool:

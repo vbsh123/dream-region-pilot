@@ -76,19 +76,20 @@ def sample_tokens(
 def local_transfer_count(
     remaining_masks: int,
     *,
-    clock: int,
+    schedule_step: int,
     local_steps: int,
     eps: float,
 ) -> int:
+    """Dream's linear transfer quota applied to one region's local schedule."""
     if remaining_masks <= 0:
         return 0
-    if not 0 <= clock < local_steps:
-        raise ValueError("clock must index an unfinished local schedule")
-    if clock == local_steps - 1:
+    if not 0 <= schedule_step < local_steps:
+        raise ValueError("schedule_step must index an unfinished local schedule")
+    if schedule_step == local_steps - 1:
         return remaining_masks
     delta = (1.0 - eps) / local_steps
-    current_time = 1.0 - clock * delta
-    next_time = 1.0 - (clock + 1) * delta
+    current_time = 1.0 - schedule_step * delta
+    next_time = 1.0 - (schedule_step + 1) * delta
     return int(remaining_masks * (1.0 - next_time / current_time))
 
 
@@ -106,13 +107,20 @@ def commit_active_regions(
     top_k: int | None,
     policy: str,
     alg_temp: float | None,
-    region_groups: list[list[Region]] | None = None,
     deferral_confidence_threshold: float | None = None,
     max_region_deferrals: int | None = 0,
     region_deferral_counts: dict[int, int] | None = None,
     deferral_decisions: list[dict[str, Any]] | None = None,
     force_region_reasons: dict[int, str] | None = None,
+    stop_protection_mode: str | None = None,
+    stop_token_ids: set[int] | None = None,
+    stop_protected_regions: set[int] | None = None,
+    stop_protection_decisions: list[dict[str, Any]] | None = None,
 ) -> dict[int, list[int]]:
+    if stop_protection_mode not in {None, "filter", "defer"}:
+        raise ValueError("stop_protection_mode must be None, filter, or defer")
+    if stop_protection_mode is not None and not stop_token_ids:
+        raise ValueError("stop_token_ids is required for stop protection")
     if deferral_confidence_threshold is not None:
         if not 0.0 <= deferral_confidence_threshold <= 1.0:
             raise ValueError("deferral_confidence_threshold must be in [0, 1]")
@@ -142,6 +150,9 @@ def commit_active_regions(
     full_predictions = tokens.clone()
     full_confidence[absolute_mask] = confidence.to(logits.dtype)
     full_predictions[absolute_mask] = predictions
+    full_raw_top1_predictions = tokens.clone()
+    if stop_protection_mode == "defer":
+        full_raw_top1_predictions[absolute_mask] = masked_logits.argmax(dim=-1)
     full_raw_top1_probability = torch.zeros(
         tokens.shape,
         dtype=torch.float32,
@@ -156,42 +167,19 @@ def commit_active_regions(
         full_raw_top1_probability[absolute_mask] = raw_top1_probability
 
     committed: dict[int, list[int]] = {region.index: [] for region in regions}
-    groups = region_groups or [[region] for region in regions]
-    grouped_indices = [region.index for group in groups for region in group]
-    if sorted(grouped_indices) != sorted(region.index for region in regions):
-        raise ValueError("region_groups must contain every active region exactly once")
-    if deferral_confidence_threshold is not None and any(
-        len(group) != 1 for group in groups
-    ):
-        raise ValueError("bounded deferral requires one commitment pool per region")
-
-    for group in groups:
-        masked_by_region: dict[int, torch.Tensor] = {}
-        count = 0
-        terminal_relative: list[torch.Tensor] = []
-        for region in group:
-            relative = torch.tensor(
-                region.token_indices, dtype=torch.long, device=tokens.device
-            )
-            masked_relative = relative[response_mask[relative]]
-            masked_by_region[region.index] = masked_relative
-            if region.schedule_step == local_steps - 1:
-                # A pooled component may otherwise spend this region's final
-                # transfer budget on higher-confidence tokens in another
-                # member.  Its schedule cursor would then be exhausted while
-                # masks remain, leaving it permanently ineligible.  Preserve
-                # Dream's terminal-step completion invariant per region; the
-                # rest of the component's budget is still selected jointly.
-                terminal_relative.append(masked_relative)
-            count += local_transfer_count(
-                int(masked_relative.numel()),
-                clock=region.schedule_step,
-                local_steps=local_steps,
-                eps=eps,
-            )
+    for region in regions:
+        relative = torch.tensor(
+            region.token_indices, dtype=torch.long, device=tokens.device
+        )
+        masked_relative = relative[response_mask[relative]]
+        count = local_transfer_count(
+            int(masked_relative.numel()),
+            schedule_step=region.schedule_step,
+            local_steps=local_steps,
+            eps=eps,
+        )
         if count == 0:
             if deferral_confidence_threshold is not None:
-                region = group[0]
                 if deferral_decisions is not None:
                     deferral_decisions.append(
                         {
@@ -205,40 +193,98 @@ def commit_active_regions(
                         }
                     )
             continue
-
-        group_relative = torch.cat(
-            [masked_by_region[region.index] for region in group]
+        count = min(count, int(masked_relative.numel()))
+        candidate_absolute = masked_relative + prompt_length
+        scores = full_confidence[0, candidate_absolute]
+        candidate_predictions = full_predictions[0, candidate_absolute]
+        stop_test_predictions = (
+            full_raw_top1_predictions[0, candidate_absolute]
+            if stop_protection_mode == "defer"
+            else candidate_predictions
         )
-        count = min(count, int(group_relative.numel()))
-        reserved_relative = (
-            torch.cat(terminal_relative)
-            if terminal_relative
-            else group_relative[:0]
+        protected = (
+            stop_protection_mode is not None
+            and region.index in (stop_protected_regions or set())
         )
-        remaining_budget = count - int(reserved_relative.numel())
-        if remaining_budget < 0:
-            raise RuntimeError("terminal commitment exceeds the group budget")
+        stop_candidate_mask = torch.zeros_like(
+            candidate_predictions, dtype=torch.bool
+        )
+        if protected:
+            for stop_id in stop_token_ids or set():
+                stop_candidate_mask |= stop_test_predictions == stop_id
 
-        if remaining_budget:
-            candidate_mask = ~torch.isin(group_relative, reserved_relative)
-            candidate_relative = group_relative[candidate_mask]
-            candidate_absolute = candidate_relative + prompt_length
-            scores = full_confidence[0, candidate_absolute]
+        selection_pool = torch.arange(
+            masked_relative.numel(), device=tokens.device
+        )
+        if protected and stop_protection_mode == "filter":
+            selection_pool = selection_pool[~stop_candidate_mask]
+        selected_count = min(count, int(selection_pool.numel()))
+        if selected_count > 0:
+            pool_scores = scores[selection_pool]
             if alg_temp is None or alg_temp == 0:
-                chosen_local = torch.topk(scores, k=remaining_budget).indices
+                chosen_in_pool = torch.topk(
+                    pool_scores, k=selected_count
+                ).indices
             else:
-                weights = F.softmax(scores / alg_temp, dim=-1)
-                chosen_local = torch.multinomial(
-                    weights, num_samples=remaining_budget
+                weights = F.softmax(pool_scores / alg_temp, dim=-1)
+                chosen_in_pool = torch.multinomial(
+                    weights, num_samples=selected_count
                 )
-            selected_relative = torch.cat(
-                (reserved_relative, candidate_relative[chosen_local])
-            )
+            chosen_local = selection_pool[chosen_in_pool]
+            selected_relative = masked_relative[chosen_local]
         else:
-            selected_relative = reserved_relative
+            chosen_local = selection_pool
+            selected_relative = masked_relative[selection_pool]
+
+        if protected and stop_protection_mode == "defer":
+            selected_has_stop = bool(
+                stop_candidate_mask[chosen_local].any().item()
+            )
+            if selected_has_stop:
+                if stop_protection_decisions is not None:
+                    stop_protection_decisions.append(
+                        {
+                            "region": region.index,
+                            "action": "stop_deferred",
+                            "scheduled_quota": count,
+                            "committed_quota": 0,
+                            "stop_candidates": int(
+                                stop_candidate_mask.sum().item()
+                            ),
+                            "hold_schedule": True,
+                        }
+                    )
+                continue
+
+        if protected and stop_protection_mode == "filter" and bool(
+            stop_candidate_mask.any().item()
+        ):
+            hold_schedule = selected_count < count
+            if stop_protection_decisions is not None:
+                stop_protection_decisions.append(
+                    {
+                        "region": region.index,
+                        "action": (
+                            "stop_filtered"
+                            if not hold_schedule
+                            else (
+                                "stop_filtered_partial"
+                                if selected_count > 0
+                                else "stop_filtered_empty"
+                            )
+                        ),
+                        "scheduled_quota": count,
+                        "committed_quota": selected_count,
+                        "stop_candidates": int(
+                            stop_candidate_mask.sum().item()
+                        ),
+                        "hold_schedule": hold_schedule,
+                    }
+                )
+            if selected_count == 0:
+                continue
 
         if deferral_confidence_threshold is not None:
-            region = group[0]
             selected_absolute = selected_relative + prompt_length
             minimum_probability = float(
                 full_raw_top1_probability[0, selected_absolute].min().item()
@@ -287,16 +333,9 @@ def commit_active_regions(
                 )
         selected_absolute = selected_relative + prompt_length
         tokens[0, selected_absolute] = full_predictions[0, selected_absolute]
-        for region in group:
-            region_start = region.token_indices[0]
-            region_end = region.token_indices[-1] + 1
-            selected_in_region = selected_relative[
-                (selected_relative >= region_start)
-                & (selected_relative < region_end)
-            ]
-            committed[region.index] = [
-                int(position.item()) for position in selected_in_region
-            ]
+        committed[region.index] = [
+            int(position.item()) for position in selected_relative
+        ]
     return committed
 
 

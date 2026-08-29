@@ -2,7 +2,6 @@
 
 `scripts/setup_vast.sh` creates ignored, detached source checkouts here:
 
-- `DAPD` at `05727b08da4cb4008a275123d7d9885dd5714f7c`.
 - official `Red-EAD/FlowBlock` at
   `8f730a2173140792a4324736efdcba27a2bdee75`.
 - official `lizhuo-luo/DAWN` at

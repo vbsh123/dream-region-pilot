@@ -30,33 +30,17 @@ generation:
   alg_temp: 0.0
   seed: 42
 
-dependency:
-  dapd_repo: external/DAPD
-  dapd_revision: 05727b08da4cb4008a275123d7d9885dd5714f7c
-  layer_ratio: 0.3
-  recompute_interval: 4
-  matrix: raw
-  aggregator: topk_percent
-  topk_percent: 0.10
-  gamma: 2.0
-  threshold: 0.005
+sources: {}
 
 probe:
   max_active_regions: 8
   spawn_readiness: 0.15
   readiness_confidence_threshold: 0.50
   max_progress_gap: 8
-  edge_persistence: 2
   flowblock_proxy:
     max_active_regions: 2
     spawn_readiness: 0.60
     readiness_confidence_threshold: 0.50
-  mean_field:
-    enabled: true
-    topk: 256
-    pair_chunk_size: 128
-    thresholds: [0.50, 0.70, 0.80, 0.90, 0.95]
-    combination_threshold: 0.90
 
 mean_field_baseline:
   block_size: 32
@@ -71,10 +55,5 @@ experiment:
     - loose_wavefront
     - mean_field_repro
     - controlled_position
-    - controlled_dapd
-    - controlled_jsd
-    - controlled_combo
   rotate_strategy_order: true
   diagnostic_examples: 3
-  diagnostic_snapshot_interval: 4
-  release_completed_parents: true

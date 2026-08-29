@@ -12,9 +12,9 @@ from .commit import (
     commit_active_regions_dawn,
     describe_commitments,
 )
-from .dependencies import DAPDDreamAdapter, graph_summary, make_dependency_snapshot
 from .diagnostics import ExampleDiagnostics
-from .mean_field import mean_field_commit_indices, topk_tail_jsd_dependency
+from .mean_field import mean_field_commit_indices
+from .model_adapter import DreamModelAdapter
 from .regions import build_fixed_regions, refresh_remaining_masks
 from .scheduler import RegionScheduler, parse_strategy
 
@@ -47,6 +47,44 @@ def stop_token_ids(tokenizer) -> set[int]:
         if marker in vocabulary:
             result.add(int(vocabulary[marker]))
     return result
+
+
+def regional_approximation_name(mode: str) -> str:
+    names = {
+        "always_on_dawn_tail_guard": "regional_dawn_selector_plus_tail_guard",
+        "always_on_coupled_defer_dawn_tail_guard": (
+            "regional_dawn_selector_plus_coupled_startup_deferral_and_tail_guard"
+        ),
+        "flowblock_proxy": "flowblock_admission_proxy_plus_per_region_linear_time",
+        "loose_wavefront": "loose_confidence_admission_plus_per_region_linear_time",
+        "controlled_position": "positional_bounded_progress_skew",
+        "controlled_position_tail_guard": (
+            "predicted_terminal_region_guard_plus_positional_bounded_progress_skew"
+        ),
+        "always_on_tail_guard": (
+            "predicted_terminal_region_guard_plus_always_on_regions"
+        ),
+        "always_on_bounded_defer": "bounded_confidence_deferral",
+        "always_on_bounded_defer_tail_guard": (
+            "bounded_confidence_deferral_plus_predicted_terminal_region_guard"
+        ),
+        "always_on_coupled_defer": (
+            "confidence_deferral_plus_positional_bounded_staleness"
+        ),
+        "always_on_coupled_defer_tail_guard": (
+            "confidence_deferral_plus_positional_bounded_staleness_plus_"
+            "predicted_terminal_region_guard"
+        ),
+        "always_on_coupled_defer_stop_filter": (
+            "confidence_deferral_plus_positional_bounded_staleness_plus_"
+            "prefix_conditioned_stop_filtering"
+        ),
+        "always_on_coupled_defer_stop_defer": (
+            "confidence_deferral_plus_positional_bounded_staleness_plus_"
+            "prefix_conditioned_stop_deferral"
+        ),
+    }
+    return names.get(mode, "per_region_linear_time")
 
 
 def decode_response(
@@ -174,10 +212,7 @@ def decode_vanilla(
         "canvas_tokens_per_second": canvas_tokens_per_second,
         "effective_tokens_per_second": effective_tokens_per_second,
         "forward_passes_per_second": nfe / elapsed if elapsed > 0 else None,
-        "dependency_recomputations": 0,
-        "dependency_seconds": 0.0,
         "mean_field_seconds": 0.0,
-        "dependency_signal_seconds": 0.0,
         "diagnostic_seconds_excluded_from_wall_clock": 0.0,
         "schedule_approximation": False,
     }
@@ -260,10 +295,7 @@ def decode_official_dawn(
             effective_tokens / elapsed if elapsed > 0 else None
         ),
         "forward_passes_per_second": nfe / elapsed if elapsed > 0 else None,
-        "dependency_recomputations": nfe,
-        "dependency_seconds": 0.0,
         "mean_field_seconds": 0.0,
-        "dependency_signal_seconds": 0.0,
         "dawn_selection_seconds": 0.0,
         "diagnostic_seconds_excluded_from_wall_clock": 0.0,
         "official_dawn": True,
@@ -295,7 +327,7 @@ def decode_mean_field_repro(
     prompt: torch.Tensor,
     *,
     generation: dict[str, Any],
-    adapter: DAPDDreamAdapter,
+    adapter: DreamModelAdapter,
     mean_field: dict[str, Any],
 ) -> dict[str, Any]:
     """Paper-faithful Algorithm 1 reproduction over sequential active blocks.
@@ -382,10 +414,7 @@ def decode_mean_field_repro(
             effective_tokens / elapsed if elapsed > 0 else None
         ),
         "forward_passes_per_second": nfe / elapsed if elapsed > 0 else None,
-        "dependency_recomputations": nfe,
-        "dependency_seconds": 0.0,
         "mean_field_seconds": selection_seconds,
-        "dependency_signal_seconds": selection_seconds,
         "diagnostic_seconds_excluded_from_wall_clock": 0.0,
         "mean_field_threshold": threshold,
         "mean_field_iterations": iterations,
@@ -407,14 +436,11 @@ def decode_regional(
     *,
     strategy: str,
     generation: dict[str, Any],
-    dependency: dict[str, Any],
-    adapter: DAPDDreamAdapter,
-    release_completed_parents: bool,
+    adapter: DreamModelAdapter,
     diagnostics_dir: Path | None,
-    diagnostic_snapshot_interval: int,
     probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    mode, lag = parse_strategy(strategy)
+    mode = parse_strategy(strategy)
     device = prompt.device
     prompt_length = prompt.shape[1]
     generation_length = int(generation["max_new_tokens"])
@@ -457,72 +483,27 @@ def decode_regional(
     scheduler = RegionScheduler(
         regions,
         mode=mode,
-        lag=lag,
-        release_completed_parents=release_completed_parents,
         max_active_regions=int(
             strategy_probe.get("max_active_regions", len(regions))
         ),
         spawn_readiness=float(strategy_probe.get("spawn_readiness", 0.15)),
         max_progress_gap=int(strategy_probe.get("max_progress_gap", 8)),
-        edge_persistence=int(strategy_probe.get("edge_persistence", 2)),
     )
+    initial_admitted_region_count = scheduler.admitted_count
     diagnostics = (
-        ExampleDiagnostics(diagnostics_dir, diagnostic_snapshot_interval)
+        ExampleDiagnostics(diagnostics_dir)
         if diagnostics_dir is not None
         else None
     )
 
-    recompute_interval = int(dependency["recompute_interval"])
-    if recompute_interval <= 0:
-        raise ValueError("dependency.recompute_interval must be positive")
-    graph_controlled_modes = {
-        "controlled_dapd",
-        "controlled_jsd",
-        "controlled_combo",
-        "controlled_dapd_dynamic",
-        "controlled_jsd_dynamic",
-        "controlled_combo_dynamic",
-    }
-    use_graph = mode in {"fixed_lag", "wavefront_probe"} | graph_controlled_modes
-    needs_dapd = mode in {
-        "fixed_lag",
-        "wavefront_probe",
-        "controlled_dapd",
-        "controlled_combo",
-        "controlled_dapd_dynamic",
-        "controlled_combo_dynamic",
-    }
-    mean_field_config = probe.get("mean_field", {})
-    use_mean_field = mode in {
-        "wavefront_probe",
-        "controlled_jsd",
-        "controlled_combo",
-        "controlled_jsd_dynamic",
-        "controlled_combo_dynamic",
-    } and bool(mean_field_config.get("enabled", False))
-    mean_field_thresholds = [
-        float(value)
-        for value in mean_field_config.get(
-            "thresholds", [0.5, 0.7, 0.8, 0.9, 0.95]
-        )
-    ]
-    combination_threshold = float(
-        mean_field_config.get("combination_threshold", 0.9)
-    )
-    if use_mean_field and combination_threshold not in mean_field_thresholds:
-        mean_field_thresholds.append(combination_threshold)
-    latest_snapshot = None
     nfe = 0
-    dependency_recomputations = 0
-    dependency_seconds = 0.0
     diagnostic_seconds = 0.0
-    mean_field_seconds = 0.0
-    graph_summaries: list[dict[str, Any]] = []
     tokens_committed_per_forward: list[int] = []
     admission_events: list[dict[str, Any]] = []
     control_timeline: list[dict[str, Any]] = []
     tail_guard_timeline: list[dict[str, Any]] = []
     deferral_timeline: list[dict[str, Any]] = []
+    stop_protection_timeline: list[dict[str, Any]] = []
     bounded_deferral_modes = {
         "always_on_bounded_defer",
         "always_on_bounded_defer_tail_guard",
@@ -530,7 +511,13 @@ def decode_regional(
     coupled_deferral_modes = {
         "always_on_coupled_defer",
         "always_on_coupled_defer_tail_guard",
+        "always_on_coupled_defer_stop_filter",
+        "always_on_coupled_defer_stop_defer",
         "always_on_coupled_defer_dawn_tail_guard",
+    }
+    stop_protection_modes = {
+        "always_on_coupled_defer_stop_filter": "filter",
+        "always_on_coupled_defer_stop_defer": "defer",
     }
     deferral_modes = bounded_deferral_modes | coupled_deferral_modes
     uses_bounded_deferral = mode in deferral_modes
@@ -570,150 +557,20 @@ def decode_regional(
     global_empty_deferral_streak = 0
     dawn_selection_seconds = 0.0
     dawn_selector_timeline: list[dict[str, Any]] = []
+    stop_stalled_regions: set[int] = set()
 
     synchronize(device)
     started = time.perf_counter()
-    maximum_iterations = scheduler_local_steps * (len(regions) + lag + 2)
+    maximum_iterations = scheduler_local_steps * (len(regions) + 2)
     if mode in coupled_deferral_modes:
         maximum_iterations *= max_global_deferral_iterations + 1
     while bool((tokens[:, prompt_length:] == mask_id).any()):
         response_mask = tokens[:, prompt_length:] == mask_id
-        should_recompute = use_graph and (
-            latest_snapshot is None or nfe % recompute_interval == 0
-        )
         dawn_attention = None
         if uses_dawn_selector:
             logits, dawn_attention = adapter.forward_with_dawn_attention(
                 model, tokens
             )
-        elif should_recompute:
-            if needs_dapd:
-                synchronize(device)
-                dependency_started = time.perf_counter()
-                logits, raw_token, normalized_token = (
-                    adapter.forward_with_dependencies(
-                        model,
-                        tokens,
-                        response_mask,
-                        prompt_length,
-                    )
-                )
-                synchronize(device)
-                dependency_seconds += time.perf_counter() - dependency_started
-            else:
-                # JSD uses the ordinary logits from this forward and does not
-                # need DAPD's Q/K capture or attention reconstruction.
-                logits = adapter.forward_logits(model, tokens)
-                synchronize(device)
-                raw_token = torch.zeros(
-                    (generation_length, generation_length),
-                    dtype=torch.float32,
-                    device=device,
-                )
-                normalized_token = raw_token.clone()
-            dependency_recomputations += 1
-            additional_dependencies = None
-            dependency_metadata: dict[str, Any] = {
-                "dapd_computed": needs_dapd,
-            }
-            if use_mean_field:
-                mean_field_started = time.perf_counter()
-                (
-                    mean_field_raw_token,
-                    mean_field_token,
-                    mean_field_metadata,
-                ) = topk_tail_jsd_dependency(
-                    logits[:, prompt_length:],
-                    response_mask,
-                    topk=int(mean_field_config.get("topk", 256)),
-                    pair_chunk_size=int(
-                        mean_field_config.get("pair_chunk_size", 128)
-                    ),
-                )
-                synchronize(device)
-                mean_field_seconds += time.perf_counter() - mean_field_started
-                additional_dependencies = {
-                    "mean_field_raw": mean_field_raw_token,
-                    "mean_field": mean_field_token,
-                }
-                dependency_metadata["mean_field"] = mean_field_metadata
-            latest_snapshot = make_dependency_snapshot(
-                raw_token=raw_token,
-                normalized_token=normalized_token,
-                regions=regions,
-                matrix=str(dependency["matrix"]),
-                aggregator=str(dependency["aggregator"]),
-                topk_percent=float(dependency["topk_percent"]),
-                gamma=float(dependency["gamma"]),
-                threshold=float(dependency["threshold"]),
-                additional_token_dependencies=additional_dependencies,
-                additional_thresholds=(
-                    {"mean_field": mean_field_thresholds}
-                    if use_mean_field
-                    else None
-                ),
-                additional_aggregators=(
-                    {"mean_field": "mean", "mean_field_raw": "mean"}
-                    if use_mean_field
-                    else None
-                ),
-                combination_threshold=(
-                    combination_threshold
-                    if use_mean_field and needs_dapd
-                    else None
-                ),
-                metadata=dependency_metadata,
-            )
-            primary_graph_key = "dapd"
-            if mode == "fixed_lag":
-                scheduler.set_parents(latest_snapshot.parents)
-            elif mode in graph_controlled_modes:
-                graph_key = {
-                    "controlled_dapd": "dapd",
-                    "controlled_dapd_dynamic": "dapd",
-                    "controlled_jsd": (
-                        f"mean_field_t{combination_threshold:.2f}"
-                    ),
-                    "controlled_jsd_dynamic": (
-                        f"mean_field_t{combination_threshold:.2f}"
-                    ),
-                    "controlled_combo": (
-                        f"combined_intersection_t{combination_threshold:.2f}"
-                    ),
-                    "controlled_combo_dynamic": (
-                        f"combined_intersection_t{combination_threshold:.2f}"
-                    ),
-                }[mode]
-                primary_graph_key = graph_key
-                if graph_key not in latest_snapshot.signal_graphs:
-                    raise RuntimeError(
-                        f"Required dependency graph {graph_key!r} was not constructed"
-                    )
-                scheduler.observe_dependency_edges(
-                    latest_snapshot.signal_graphs[graph_key].edges
-                )
-            graph_summaries.append(
-                {
-                    "iteration": nfe,
-                    "primary_signal": primary_graph_key,
-                    **graph_summary(
-                        latest_snapshot,
-                        latest_snapshot.signal_graphs[primary_graph_key],
-                    ),
-                    "signals": {
-                        name: {
-                            "threshold": signal_graph.threshold,
-                            **graph_summary(latest_snapshot, signal_graph),
-                        }
-                        for name, signal_graph in latest_snapshot.signal_graphs.items()
-                    },
-                    "metadata": latest_snapshot.metadata,
-                }
-            )
-            if diagnostics is not None:
-                diagnostic_started = time.perf_counter()
-                diagnostics.record_dependency(nfe, latest_snapshot)
-                diagnostic_seconds += time.perf_counter() - diagnostic_started
         else:
             logits = adapter.forward_logits(model, tokens)
         nfe += 1
@@ -752,18 +609,21 @@ def decode_regional(
                 not region.done for region in regions[:provisional_tail]
             ):
                 guarded_tail = provisional_tail
+        progress_tokens_before = {
+            region.index: scheduler.revealed_tokens(region) for region in regions
+        }
+        gap_exempt_children_this_iteration = set(stop_stalled_regions)
         active = scheduler.regions_allowed_to_advance(
             scheduler_local_steps,
             max_region_exclusive=guarded_tail,
+            progress_gap_exempt_children=gap_exempt_children_this_iteration,
         )
         if not active:
             clocks = {region.index: region.clock for region in regions}
             raise RuntimeError(
                 "Regional scheduler deadlocked with masks remaining; "
-                f"strategy={strategy}, clocks={clocks}, "
-                f"release_completed_parents={release_completed_parents}"
+                f"strategy={strategy}, clocks={clocks}"
             )
-        commit_groups = scheduler.commitment_groups(active)
         deferral_decisions: list[dict[str, Any]] = []
         force_region_reasons: dict[int, str] = {}
         if mode in coupled_deferral_modes:
@@ -789,6 +649,14 @@ def decode_regional(
             ):
                 force_region_reasons[active[0].index] = "global_deadlock"
         dawn_selector_stats: list[dict[str, Any]] = []
+        stop_protection_decisions: list[dict[str, Any]] = []
+        stop_protected_regions: set[int] = set()
+        if mode in stop_protection_modes:
+            unfinished_prefix = False
+            for region in regions:
+                if unfinished_prefix:
+                    stop_protected_regions.add(region.index)
+                unfinished_prefix = unfinished_prefix or not region.done
         if uses_dawn_selector:
             if dawn_attention is None:
                 raise RuntimeError("DAWN selector has no attention matrix")
@@ -835,7 +703,6 @@ def decode_regional(
                 top_k=generation.get("top_k"),
                 policy=str(generation["commit_policy"]),
                 alg_temp=generation.get("alg_temp"),
-                region_groups=commit_groups,
                 deferral_confidence_threshold=(
                     deferral_confidence_threshold
                     if uses_bounded_deferral
@@ -851,6 +718,10 @@ def decode_regional(
                 ),
                 deferral_decisions=deferral_decisions,
                 force_region_reasons=force_region_reasons,
+                stop_protection_mode=stop_protection_modes.get(mode),
+                stop_token_ids=termination_ids,
+                stop_protected_regions=stop_protected_regions,
+                stop_protection_decisions=stop_protection_decisions,
             )
         commitment_details: list[dict[str, Any]] = []
         if diagnostics is not None:
@@ -885,8 +756,17 @@ def decode_regional(
             for item in deferral_decisions
             if item["action"] == "deferred"
         }
+        stop_schedule_held_regions = {
+            int(item["region"])
+            for item in stop_protection_decisions
+            if bool(item["hold_schedule"])
+        }
+        stop_stalled_regions = set(stop_schedule_held_regions)
         schedule_advanced_regions = [
-            region for region in active if region.index not in deferred_regions
+            region
+            for region in active
+            if region.index not in deferred_regions
+            and region.index not in stop_schedule_held_regions
         ]
         advanced = scheduler.apply_updates(schedule_advanced_regions, committed)
         committed_this_forward = sum(
@@ -916,21 +796,15 @@ def decode_regional(
             )
         control_state = {
             "iteration": nfe,
-            "progress_tokens": {
+            "progress_tokens_before": progress_tokens_before,
+            "progress_tokens_after": {
                 region.index: scheduler.revealed_tokens(region) for region in regions
             },
-            "active_dependency_edges": [
-                list(pair) for pair in sorted(scheduler.active_dependency_edges)
-            ],
             "control_edges": [
                 list(pair) for pair in sorted(scheduler.last_control_edges)
             ],
             "blocked_regions": sorted(scheduler.last_blocked_regions),
             "urgent_regions": sorted(scheduler.last_urgent_regions),
-            "commit_groups": [
-                [region.index for region in group]
-                for group in commit_groups
-            ],
             "predicted_tail_region": provisional_tail,
             "guarded_tail_region": guarded_tail,
             "deferral_decisions": deferral_decisions,
@@ -938,6 +812,12 @@ def decode_regional(
             "force_region_reasons": force_region_reasons,
             "global_empty_deferral_streak": global_empty_deferral_streak,
             "dawn_selector": dawn_selector_stats,
+            "stop_protected_regions": sorted(stop_protected_regions),
+            "stop_protection_decisions": stop_protection_decisions,
+            "stop_gap_exempt_children": sorted(
+                gap_exempt_children_this_iteration
+            ),
+            "next_stop_gap_exempt_children": sorted(stop_stalled_regions),
         }
         if scheduler.is_controlled:
             control_timeline.append(control_state)
@@ -982,6 +862,18 @@ def decode_regional(
                     ),
                 }
             )
+        if mode in stop_protection_modes:
+            stop_protection_timeline.append(
+                {
+                    "iteration": nfe,
+                    "mode": stop_protection_modes[mode],
+                    "protected_regions": sorted(stop_protected_regions),
+                    "decisions": stop_protection_decisions,
+                    "schedule_held_regions": sorted(
+                        stop_schedule_held_regions
+                    ),
+                }
+            )
         if diagnostics is not None:
             diagnostic_started = time.perf_counter()
             diagnostics.record_iteration(
@@ -991,7 +883,6 @@ def decode_regional(
                 advanced=[region.index for region in advanced],
                 committed=committed,
                 commitment_details=commitment_details,
-                edges=latest_snapshot.edges if latest_snapshot is not None else [],
                 admitted_region_count=scheduler.admitted_count,
                 newly_admitted=newly_admitted,
                 readiness_by_region=readiness_by_region,
@@ -1037,10 +928,7 @@ def decode_regional(
             nfe / wall_clock_seconds if wall_clock_seconds > 0 else None
         ),
         "diagnostic_seconds_excluded_from_wall_clock": diagnostic_seconds,
-        "dependency_recomputations": dependency_recomputations,
-        "dependency_seconds": dependency_seconds,
-        "mean_field_seconds": mean_field_seconds,
-        "dependency_signal_seconds": dependency_seconds + mean_field_seconds,
+        "mean_field_seconds": 0.0,
         "dawn_selection_seconds": dawn_selection_seconds,
         "dawn_selector_timeline": dawn_selector_timeline,
         "dawn_fallback_region_events": sum(
@@ -1055,20 +943,17 @@ def decode_regional(
             if not bool(region_item.get("deferred"))
         ),
         "dawn_config": dawn_config if uses_dawn_selector else None,
-        "graph_summaries": graph_summaries,
-        "mean_graph_edge_density": (
-            sum(item["edge_density"] for item in graph_summaries)
-            / len(graph_summaries)
-            if graph_summaries
-            else None
-        ),
         "region_clocks": {region.index: region.clock for region in regions},
         "region_schedule_steps": {
             region.index: region.schedule_step for region in regions
         },
+        "region_size": region_size,
+        "local_steps": local_steps,
         "admission_events": admission_events,
+        "initial_admitted_region_count": initial_admitted_region_count,
         "final_admitted_region_count": scheduler.admitted_count,
         "max_active_regions": scheduler.max_active_regions,
+        "max_progress_gap": scheduler.max_progress_gap,
         "spawn_readiness": scheduler.spawn_readiness,
         "readiness_confidence_threshold": float(
             strategy_probe.get("readiness_confidence_threshold", 0.5)
@@ -1076,6 +961,7 @@ def decode_regional(
         "control_timeline": control_timeline,
         "tail_guard_timeline": tail_guard_timeline,
         "deferral_timeline": deferral_timeline,
+        "stop_protection_timeline": stop_protection_timeline,
         "deferral_confidence_threshold": (
             deferral_confidence_threshold if uses_bounded_deferral else None
         ),
@@ -1095,6 +981,21 @@ def decode_regional(
         "iterations_with_tail_guard": sum(
             item["guarded_tail_region"] is not None
             for item in tail_guard_timeline
+        ),
+        "iterations_with_stop_protection": sum(
+            bool(item["decisions"]) for item in stop_protection_timeline
+        ),
+        "stop_protection_region_events": sum(
+            len(item["decisions"]) for item in stop_protection_timeline
+        ),
+        "stop_protection_schedule_hold_events": sum(
+            len(item["schedule_held_regions"])
+            for item in stop_protection_timeline
+        ),
+        "stop_filtered_candidate_events": sum(
+            int(decision["stop_candidates"])
+            for item in stop_protection_timeline
+            for decision in item["decisions"]
         ),
         "iterations_with_deferral": sum(
             bool(item["deferred_regions"]) for item in deferral_timeline
@@ -1132,92 +1033,6 @@ def decode_regional(
         "blocked_region_events": sum(
             len(item["blocked_regions"]) for item in control_timeline
         ),
-        "mean_active_dependency_edge_count": (
-            sum(len(item["active_dependency_edges"]) for item in control_timeline)
-            / len(control_timeline)
-            if control_timeline
-            else 0.0
-        ),
-        "iterations_with_pooled_commit_groups": sum(
-            any(len(group) > 1 for group in item.get("commit_groups", []))
-            for item in control_timeline
-        ),
-        "mean_max_commit_group_size": (
-            sum(
-                max(
-                    (len(group) for group in item.get("commit_groups", [])),
-                    default=0,
-                )
-                for item in control_timeline
-            )
-            / len(control_timeline)
-            if control_timeline
-            else 0.0
-        ),
-        "final_active_dependency_edges": [
-            list(pair) for pair in sorted(scheduler.active_dependency_edges)
-        ],
         "schedule_approximation": True,
-        "schedule_approximation_name": (
-            "regional_dawn_selector_plus_coupled_startup_deferral_and_tail_guard"
-            if mode == "always_on_coupled_defer_dawn_tail_guard"
-            else (
-                "regional_dawn_selector_plus_tail_guard"
-                if mode == "always_on_dawn_tail_guard"
-                else (
-            "per_region_linear_time_with_completed_parent_release"
-            if mode == "fixed_lag" and release_completed_parents
-            else (
-                "flowblock_admission_proxy_plus_per_region_linear_time"
-                if mode == "flowblock_proxy"
-                else (
-                    "loose_confidence_admission_plus_per_region_linear_time"
-                    if mode in {"wavefront_probe", "loose_wavefront"}
-                    else (
-                        "persistent_dependency_bounded_progress_skew"
-                        if mode in graph_controlled_modes
-                        and not scheduler.uses_dynamic_commit_groups
-                        else (
-                            "dynamic_dependency_components_pooled_commitment"
-                            if scheduler.uses_dynamic_commit_groups
-                            else (
-                                "positional_bounded_progress_skew"
-                                if mode == "controlled_position"
-                                else (
-                                    "predicted_terminal_region_guard_plus_positional_bounded_skew"
-                                    if mode == "controlled_position_tail_guard"
-                                    else (
-                                        "predicted_terminal_region_guard_plus_always_on_regions"
-                                        if mode == "always_on_tail_guard"
-                                        else (
-                                            "bounded_confidence_deferral_plus_predicted_terminal_region_guard"
-                                            if mode
-                                            == "always_on_bounded_defer_tail_guard"
-                                            else (
-                                                "bounded_confidence_deferral"
-                                                if mode
-                                                == "always_on_bounded_defer"
-                                                else (
-                                                    "confidence_deferral_plus_positional_bounded_staleness"
-                                                    if mode
-                                                    == "always_on_coupled_defer"
-                                                    else (
-                                                        "confidence_deferral_plus_positional_bounded_staleness_plus_predicted_terminal_region_guard"
-                                                        if mode
-                                                        == "always_on_coupled_defer_tail_guard"
-                                                        else "per_region_linear_time"
-                                                    )
-                                                )
-                                            )
-                                        )
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-                )
-            )
-        ),
+        "schedule_approximation_name": regional_approximation_name(mode),
     }

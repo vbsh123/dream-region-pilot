@@ -6,8 +6,6 @@ cd "$REPO_ROOT"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ENV_DIR="${ENV_DIR:-.venv}"
-DAPD_DIR="external/DAPD"
-DAPD_REVISION="05727b08da4cb4008a275123d7d9885dd5714f7c"
 FLOWBLOCK_DIR="external/FlowBlock"
 FLOWBLOCK_REVISION="8f730a2173140792a4324736efdcba27a2bdee75"
 DAWN_DIR="external/DAWN"
@@ -23,12 +21,6 @@ python -m pip install --index-url "$TORCH_INDEX_URL" "torch==2.5.1"
 python -m pip install -e ".[evaluation]"
 
 mkdir -p external
-if [[ ! -d "$DAPD_DIR/.git" ]]; then
-  git clone https://github.com/quasar529/DAPD.git "$DAPD_DIR"
-fi
-git -C "$DAPD_DIR" fetch origin "$DAPD_REVISION"
-git -C "$DAPD_DIR" checkout --detach "$DAPD_REVISION"
-
 # Source-only checkout avoids OpenAI HumanEval's legacy setup.py, which imports
 # pkg_resources and fails in modern isolated pip build environments. The pilot
 # imports only its standard-library execution module.

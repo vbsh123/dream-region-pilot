@@ -38,38 +38,26 @@ generation:
     - "</s>"
     - "<|im_end|>"
 
-dependency:
-  dapd_repo: external/DAPD
-  dapd_revision: 05727b08da4cb4008a275123d7d9885dd5714f7c
+sources:
   dawn_repo: external/DAWN
   dawn_revision: 19c32c28b5bf0475ccdfad853c74fc885f6410cd
-  layer_ratio: 0.3
-  recompute_interval: 4
-  matrix: raw
-  aggregator: topk_percent
-  topk_percent: 0.10
-  gamma: 2.0
-  threshold: 0.005
 
 probe:
   max_active_regions: 8
   spawn_readiness: 0.15
   readiness_confidence_threshold: 0.50
-  max_progress_gap: 8
-  edge_persistence: 2
-  deferral_confidence_threshold: 0.50
+  # Leading coupled-deferral setting: all regions start immediately, but a
+  # left region may lead its right neighbor by at most four revealed tokens.
+  max_progress_gap: 4
+  # Only each region's first two actually revealed tokens use this gate.
+  deferral_confidence_threshold: 0.40
+  deferral_until_revealed_tokens: 2
   max_region_deferrals: 4
   max_global_deferral_iterations: 4
   flowblock_proxy:
     max_active_regions: 2
     spawn_readiness: 0.60
     readiness_confidence_threshold: 0.50
-  mean_field:
-    enabled: true
-    topk: 256
-    pair_chunk_size: 128
-    thresholds: [0.50, 0.70, 0.80, 0.90, 0.95]
-    combination_threshold: 0.90
   # Official DAWN Dream GSM8K operating point from eval_instruct.sh.
   dawn:
     block_length: 32
@@ -93,10 +81,5 @@ experiment:
     - vanilla
     - loose_wavefront
     - controlled_position
-    - controlled_dapd
-    - controlled_jsd
-    - controlled_combo
   rotate_strategy_order: true
   diagnostic_examples: 0
-  diagnostic_snapshot_interval: 4
-  release_completed_parents: true

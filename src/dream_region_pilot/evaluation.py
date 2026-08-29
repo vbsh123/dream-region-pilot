@@ -34,16 +34,6 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         total_wall_clock = sum(
             float(row["wall_clock_seconds"]) for row in selected
         )
-        densities = [
-            float(row["mean_graph_edge_density"])
-            for row in selected
-            if row.get("mean_graph_edge_density") is not None
-        ]
-        graph_snapshots = [
-            snapshot
-            for row in selected
-            for snapshot in row.get("graph_summaries", [])
-        ]
         result.append(
             {
                 "strategy": strategy,
@@ -89,10 +79,6 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     if total_wall_clock > 0
                     else None
                 ),
-                "mean_dependency_seconds": sum(
-                    float(row["dependency_seconds"]) for row in selected
-                )
-                / count,
                 "mean_mean_field_seconds": sum(
                     float(row.get("mean_field_seconds", 0.0)) for row in selected
                 )
@@ -123,6 +109,30 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 / count,
                 "mean_iterations_with_tail_guard": sum(
                     int(row.get("iterations_with_tail_guard", 0))
+                    for row in selected
+                )
+                / count,
+                "mean_iterations_with_stop_protection": sum(
+                    int(row.get("iterations_with_stop_protection", 0))
+                    for row in selected
+                )
+                / count,
+                "mean_stop_protection_region_events": sum(
+                    int(row.get("stop_protection_region_events", 0))
+                    for row in selected
+                )
+                / count,
+                "mean_stop_protection_schedule_hold_events": sum(
+                    int(
+                        row.get(
+                            "stop_protection_schedule_hold_events", 0
+                        )
+                    )
+                    for row in selected
+                )
+                / count,
+                "mean_stop_filtered_candidate_events": sum(
+                    int(row.get("stop_filtered_candidate_events", 0))
                     for row in selected
                 )
                 / count,
@@ -168,48 +178,6 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     int(row.get("blocked_region_events", 0)) for row in selected
                 )
                 / count,
-                "mean_active_dependency_edge_count": sum(
-                    float(row.get("mean_active_dependency_edge_count", 0.0))
-                    for row in selected
-                )
-                / count,
-                "mean_iterations_with_pooled_commit_groups": sum(
-                    int(row.get("iterations_with_pooled_commit_groups", 0))
-                    for row in selected
-                )
-                / count,
-                "mean_max_commit_group_size": sum(
-                    float(row.get("mean_max_commit_group_size", 0.0))
-                    for row in selected
-                )
-                / count,
-                "mean_graph_edge_density": (
-                    sum(densities) / len(densities) if densities else None
-                ),
-                "mean_graph_average_degree": (
-                    sum(float(item["average_region_degree"]) for item in graph_snapshots)
-                    / len(graph_snapshots)
-                    if graph_snapshots
-                    else None
-                ),
-                "mean_graph_component_count": (
-                    sum(float(item["component_count"]) for item in graph_snapshots)
-                    / len(graph_snapshots)
-                    if graph_snapshots
-                    else None
-                ),
-                "mean_graph_max_parent_count": (
-                    sum(float(item["max_parent_count"]) for item in graph_snapshots)
-                    / len(graph_snapshots)
-                    if graph_snapshots
-                    else None
-                ),
-                "complete_graph_snapshot_fraction": (
-                    sum(bool(item["is_complete_graph"]) for item in graph_snapshots)
-                    / len(graph_snapshots)
-                    if graph_snapshots
-                    else None
-                ),
             }
         )
     vanilla = next(

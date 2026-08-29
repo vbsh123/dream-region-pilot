@@ -25,8 +25,8 @@ from .decoding import (
     decode_regional,
     decode_vanilla,
 )
-from .dependencies import DAPDDreamAdapter, verify_dawn_checkout
 from .evaluation import write_summary
+from .model_adapter import DreamModelAdapter, verify_dawn_checkout
 
 
 VANILLA_STEP_OVERRIDES = {
@@ -50,25 +50,11 @@ def parse_args() -> argparse.Namespace:
         "--region-size", type=int, choices=(16, 20, 25, 32, 40, 64)
     )
     parser.add_argument("--local-steps", type=int)
-    parser.add_argument(
-        "--dependency-aggregator",
-        choices=("mean", "topk_percent", "power_mean"),
-    )
-    parser.add_argument("--dependency-matrix", choices=("raw", "normalized"))
-    parser.add_argument("--dependency-threshold", type=float)
-    parser.add_argument("--dependency-recompute-interval", type=int)
-    parser.add_argument("--topk-percent", type=float)
-    parser.add_argument("--gamma", type=float)
     parser.add_argument("--diagnostic-examples", type=int)
-    parser.add_argument("--diagnostic-snapshot-interval", type=int)
     parser.add_argument("--probe-window", type=int)
     parser.add_argument("--spawn-readiness", type=float)
     parser.add_argument("--readiness-confidence-threshold", type=float)
-    parser.add_argument("--mean-field-topk", type=int)
-    parser.add_argument("--mean-field-thresholds", type=float, nargs="+")
-    parser.add_argument("--mean-field-combination-threshold", type=float)
     parser.add_argument("--max-progress-gap", type=int)
-    parser.add_argument("--edge-persistence", type=int)
     parser.add_argument("--deferral-confidence-threshold", type=float)
     parser.add_argument("--max-region-deferrals", type=int)
     parser.add_argument("--max-global-deferral-iterations", type=int)
@@ -164,31 +150,14 @@ def main() -> None:
             config["generation"]["local_steps"] = args.region_size
     if args.local_steps is not None:
         config["generation"]["local_steps"] = args.local_steps
-    dependency_overrides = {
-        "aggregator": args.dependency_aggregator,
-        "matrix": args.dependency_matrix,
-        "threshold": args.dependency_threshold,
-        "recompute_interval": args.dependency_recompute_interval,
-        "topk_percent": args.topk_percent,
-        "gamma": args.gamma,
-    }
-    for key, value in dependency_overrides.items():
-        if value is not None:
-            config["dependency"][key] = value
     if args.diagnostic_examples is not None:
         config["experiment"]["diagnostic_examples"] = args.diagnostic_examples
-    if args.diagnostic_snapshot_interval is not None:
-        config["experiment"][
-            "diagnostic_snapshot_interval"
-        ] = args.diagnostic_snapshot_interval
     probe_config = config.setdefault("probe", {})
-    mean_field_config = probe_config.setdefault("mean_field", {})
     probe_overrides = {
         "max_active_regions": args.probe_window,
         "spawn_readiness": args.spawn_readiness,
         "readiness_confidence_threshold": args.readiness_confidence_threshold,
         "max_progress_gap": args.max_progress_gap,
-        "edge_persistence": args.edge_persistence,
         "deferral_confidence_threshold": args.deferral_confidence_threshold,
         "max_region_deferrals": args.max_region_deferrals,
         "max_global_deferral_iterations": args.max_global_deferral_iterations,
@@ -199,14 +168,6 @@ def main() -> None:
     for key, value in probe_overrides.items():
         if value is not None:
             probe_config[key] = value
-    if args.mean_field_topk is not None:
-        mean_field_config["topk"] = args.mean_field_topk
-    if args.mean_field_thresholds is not None:
-        mean_field_config["thresholds"] = args.mean_field_thresholds
-    if args.mean_field_combination_threshold is not None:
-        mean_field_config["combination_threshold"] = (
-            args.mean_field_combination_threshold
-        )
     dawn_config = probe_config.setdefault("dawn", {})
     dawn_overrides = {
         "sink_threshold": args.dawn_sink_threshold,
@@ -231,23 +192,14 @@ def main() -> None:
         "always_on_bounded_defer_tail_guard",
         "always_on_coupled_defer",
         "always_on_coupled_defer_tail_guard",
+        "always_on_coupled_defer_stop_filter",
+        "always_on_coupled_defer_stop_defer",
         "always_on_coupled_defer_dawn_tail_guard",
-        "async_lag0",
-        "async_lag1",
-        "async_lag2",
-        "async_lag4",
-        "wavefront_probe",
         "loose_wavefront",
         "flowblock_proxy",
         "mean_field_repro",
         "controlled_position",
         "controlled_position_tail_guard",
-        "controlled_dapd",
-        "controlled_jsd",
-        "controlled_combo",
-        "controlled_dapd_dynamic",
-        "controlled_jsd_dynamic",
-        "controlled_combo_dynamic",
     }
     unknown = set(strategies) - allowed
     if unknown:
@@ -276,11 +228,11 @@ def main() -> None:
     else:
         dataset = load_benchmark(config["data"], args.limit)
         dataset_items = list(enumerate(dataset))
-    dependency_config = config["dependency"]
+    source_config = config["sources"]
     uses_dawn = any("dawn" in strategy for strategy in strategies)
-    dawn_repo = Path(dependency_config.get("dawn_repo", "external/DAWN"))
+    dawn_repo = Path(source_config.get("dawn_repo", "external/DAWN"))
     dawn_revision = str(
-        dependency_config.get(
+        source_config.get(
             "dawn_revision", "19c32c28b5bf0475ccdfad853c74fc885f6410cd"
         )
     )
@@ -291,11 +243,7 @@ def main() -> None:
         dawn_repo=dawn_repo if uses_dawn else None,
         dawn_revision=dawn_revision if uses_dawn else None,
     )
-    adapter = DAPDDreamAdapter(
-        Path(dependency_config["dapd_repo"]),
-        str(dependency_config["dapd_revision"]),
-        float(dependency_config["layer_ratio"]),
-    )
+    adapter = DreamModelAdapter()
     base_seed = int(config["generation"]["seed"])
     diagnostics_count = int(config["experiment"]["diagnostic_examples"])
 
@@ -333,18 +281,18 @@ def main() -> None:
                 seed_everything(seed)
                 diagnostics_dir = None
                 if run_position < diagnostics_count and (
-                    strategy.startswith("async_")
-                    or strategy in {
+                    strategy in {
                         "always_on",
                         "always_on_tail_guard",
                         "always_on_bounded_defer",
                         "always_on_bounded_defer_tail_guard",
                         "always_on_coupled_defer",
                         "always_on_coupled_defer_tail_guard",
+                        "always_on_coupled_defer_stop_filter",
+                        "always_on_coupled_defer_stop_defer",
                         "always_on_dawn_tail_guard",
                         "always_on_coupled_defer_dawn_tail_guard",
                     }
-                    or strategy == "wavefront_probe"
                     or strategy == "loose_wavefront"
                     or strategy == "flowblock_proxy"
                     or strategy.startswith("controlled_")
@@ -387,15 +335,8 @@ def main() -> None:
                         prompt,
                         strategy=strategy,
                         generation=config["generation"],
-                        dependency=dependency_config,
                         adapter=adapter,
-                        release_completed_parents=bool(
-                            config["experiment"]["release_completed_parents"]
-                        ),
                         diagnostics_dir=diagnostics_dir,
-                        diagnostic_snapshot_interval=int(
-                            config["experiment"]["diagnostic_snapshot_interval"]
-                        ),
                         probe=probe_config,
                     )
                 prediction, correct, scoring_method = score_generation(
@@ -434,44 +375,38 @@ def main() -> None:
         "strategies": strategies,
         "model_resolved_commit": getattr(model.config, "_commit_hash", None),
         "transformers_version": transformers.__version__,
-        "dapd_revision": adapter.revision,
         "dawn_revision": dawn_revision if uses_dawn else None,
         "implementation_notes": [
             "Attention visibility is unchanged from Dream.",
-            "DAPD post-RoPE Q/K extraction and token dependency construction are imported from the pinned public checkout.",
             "Regional modes use one linear Dream timestep schedule per fixed region.",
             "Backpressure clocks count non-empty commitment events; a separate schedule cursor consumes zero-transfer Dream schedule points.",
-            "Completed parents release children because strict positive lag otherwise deadlocks terminal child steps.",
-            "wavefront_probe admits at most one positional region per forward, uses W as a maximum active-region count, and uses a FlowBlock-style confidence acceptance ratio only for admission.",
             "flowblock_proxy transfers only W=2, theta_spawn=0.60, and token-readiness probability 0.50 into the Dream regional admission harness; it is not an implementation of FlowBlock's T2T editing, block-causal KV cache, or threshold commit policy.",
             "The 15% spawn threshold is theta_spawn; the separate token confidence threshold defaults to 0.5, matching FlowBlock's reported math setting but not Dream's entropy commit rule.",
-            "Mean-Field JSD is diagnostic-only in wavefront_probe; controlled_jsd and controlled_combo use its persistent region edges for pausing decisions but never change admission or token scoring.",
             "loose_wavefront is the graph-free W=8, theta_spawn=0.15 readiness-only ablation; unlike controlled_position it has no permanent positional bounded-skew edges.",
             "vanilla_steps32/64/72/96/128 call the official Dream diffusion_generate path with only the configured global step count changed; max_new_tokens remains 256.",
             "vanilla_steps72 is the primary compute-matched control for regional strategies that previously averaged about 71 NFEs.",
             "mean_field_repro implements Algorithm 1 from arXiv:2606.15805 with exact JSD inside sequential active blocks. The paper's linked GitHub repository currently returns 404, so this is not labelled official code.",
             "The Mean-Field pseudocode does not define an empty-commit fallback. This reproduction commits the maximum-intensity token to guarantee progress and logs every such event.",
-            "The all-canvas Mean-Field signal uses a top-k-union plus shared-tail approximation; retained probability mass is logged and paper_exact is false unless top-k equals the vocabulary size.",
-            "Controlled modes activate an edge only after both endpoints reveal a token and the edge persists for two graph observations.",
-            "Controlled modes normally advance every unblocked admitted region; they do not round-robin or graph-color components.",
-            "The controlled_*_dynamic modes rebuild connected dependency components after every graph update and pool the ordinary Dream commitment budget across each component. They do not remask or alter attention visibility.",
-            "Dynamic component merges and splits preserve each fixed region's revealed tokens, schedule cursor, and real-progress clock; no synthetic clock progress or equalization is introduced.",
-            "controlled_position uses the identical admission and bounded-skew controller without dynamic DAPD/JSD edges, isolating whether graph control helps beyond positional staggering.",
+            "Controlled modes normally advance every unblocked admitted region; they do not round-robin.",
+            "controlled_position uses loose confidence admission plus adjacent positional bounded-skew control.",
             "controlled_position_tail_guard is a coarse terminal-region ablation: while an earlier fixed region remains unfinished, it withholds the region containing the earliest currently masked top-1 stop-token prediction and every later region from forced progress.",
-            "always_on_tail_guard applies the same coarse terminal-region guard with all regions admitted from iteration zero and no positional or dependency backpressure.",
+            "always_on_tail_guard applies the same coarse terminal-region guard with all regions admitted from iteration zero and no positional backpressure.",
             "always_on_bounded_defer keeps every region active from iteration zero but withholds a region's ordinary local update when the least-confident token in that update's quota is below the raw, untempered top-1 probability threshold. The local schedule cursor does not advance on a confidence deferral.",
             "Bounded deferral forces the ordinary regional update after the configured number of consecutive skips. Natural zero-token points in Dream's transfer schedule advance the schedule cursor and do not count as confidence deferrals.",
-            "always_on_bounded_defer_tail_guard combines bounded regional deferral with the identical predicted terminal-region guard; it has no admission window, parent graph, or positional backpressure.",
+            "always_on_bounded_defer_tail_guard combines bounded regional deferral with the identical predicted terminal-region guard; it has no admission window or positional backpressure.",
             "always_on_coupled_defer starts every region immediately, permits low-confidence regional skips, and uses adjacent positional edges to bound revealed-token staleness. When an endpoint is paused at the gap, its lagging neighbor's ordinary update bypasses the confidence gate.",
             "Coupled deferral has no per-region wall-clock skip deadline: if a parent also skips, the child does not consume positional slack. Four globally empty confidence-deferral iterations trigger one forced leftmost active update solely to prevent a total fixed-point deadlock.",
             "When deferral_until_revealed_tokens is set, confidence deferral is used only until each region reaches that many actually revealed tokens. Positional gap backpressure and the optional tail guard continue for the rest of decoding.",
+            "always_on_coupled_defer_stop_filter replaces the coarse tail guard with token-level stop filtering: while a region has any unfinished region to its left, sampled EOS/EOT/IM_END proposals are excluded and the ordinary regional quota is backfilled with the strongest available non-stop proposals.",
+            "always_on_coupled_defer_stop_defer instead preserves the ordinary regional position selection and defers its entire local transition whenever a selected position's raw top-1 token is EOS/EOT/IM_END. It does not backfill from lower-ranked positions.",
+            "Stop protection has priority over confidence and gap forcing. A region stalled by stop protection temporarily exempts its left neighbor from the maximum-lead pause, allowing the unfinished prefix to complete; the stalled child is still prevented from outrunning its parent.",
             "Regional DAWN strategies load the pinned official DAWN Dream model fork and use its one-forward late-layer averaged attention scores. The model still has full-canvas visibility.",
             "official_dawn calls the pinned released DAWN sequential 32-token-block decoder directly with its released Dream GSM8K thresholds, temperature zero, and no top-p/top-k filtering. It changes no regional scheduling code and reports DAWN's returned actual NFE.",
             "always_on_dawn_tail_guard applies DAWN's anchor/conflict token selector independently to every unguarded region; always_on_coupled_defer_dawn_tail_guard adds the existing startup deferral and adjacent revealed-token backpressure.",
             "The regional DAWN selector uses the official GSM8K thresholds (sink 0.03, edge 0.10, induced 0.75, candidate confidence 0.80, high confidence 0.90) unless overridden.",
             "DAWN threshold confidence is computed from raw untempered logits, matching DAWN's released temperature-zero operating point. Token predictions retain this experiment's configured Dream sampler so the ablation changes selection rather than silently changing the benchmark sampling protocol.",
             "The public DAWN MIS helper continues for the original candidate count after suppressing conflicts and can therefore select non-candidates. This pilot implements the intended greedy MIS termination when no eligible node remains and records that deviation explicitly.",
-            "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent, while a parent is paused only when its lead exceeds the configurable eight-token default.",
+            "Progress is actual revealed-token count. A higher-position child is paused if it outruns its parent. In coupled-deferral modes, a parent is paused when its lead reaches the resolved max_progress_gap; the resolved value is stored in metadata.config.probe and in every regional result row.",
             "Urgent service never forces an extra low-confidence token; it schedules the lagging region's next ordinary Dream local update.",
             "GSM8K uses numeric final-answer scoring. ASDiv handles both numeric and categorical gold answers. MATH-500 uses math-verify 0.9.0 symbolic scoring.",
             "HumanEval reports deterministic pass@1 from the official OpenAI tests. Generated Python is executed in a restricted child process; the Vast worker should still be treated as disposable rather than as a security sandbox.",

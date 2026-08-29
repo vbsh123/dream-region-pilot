@@ -1,9 +1,7 @@
 # Third-party source notes
 
-This repository does not vendor DAPD or Dream.
+This repository does not vendor Dream.
 
-- DAPD is imported at runtime from
-  `quasar529/DAPD@05727b08da4cb4008a275123d7d9885dd5714f7c` and is MIT licensed.
 - Dream/DAWN's confidence and filtering equations in `commit.py` are a small
   adaptation of `lizhuo-luo/DAWN@19c32c28b5bf0475ccdfad853c74fc885f6410cd`,
   `dream/model/generation_utils.py`, distributed under Apache-2.0. The
@@ -18,11 +16,8 @@ This repository does not vendor DAPD or Dream.
   `openai/human-eval@6d43fb980f9fee3c892a914eda09951f772ad10d` under its MIT
   license. Its legacy packaging script is not installed.
 
-The Vast dependency versions follow DAPD's pinned public `env.yml` where they
-overlap this minimal pilot.
-
-The diagnostic and `mean_field_repro` implementations follow equations from,
-but do not copy source code from:
+The `mean_field_repro` implementation follows equations from, but does not
+copy source code from:
 
 - *Mean-Field Parallel Decoding for Discrete Diffusion Language Models*, arXiv
   `2606.15805`: Algorithm 1 and normalized predictive overlap

@@ -10,7 +10,7 @@ def load_config(path: Path) -> dict[str, Any]:
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         raise ValueError("Configuration root must be a mapping")
-    for section in ("model", "data", "generation", "dependency", "experiment"):
+    for section in ("model", "data", "generation", "sources", "experiment"):
         if not isinstance(config.get(section), dict):
             raise ValueError(f"Missing mapping section {section!r}")
     generation = config["generation"]
@@ -28,8 +28,6 @@ def load_config(path: Path) -> dict[str, Any]:
             raise ValueError("probe.max_active_regions must be positive")
         if int(probe.get("max_progress_gap", 0)) < 0:
             raise ValueError("probe.max_progress_gap must be non-negative")
-        if int(probe.get("edge_persistence", 1)) <= 0:
-            raise ValueError("probe.edge_persistence must be positive")
         for key in ("spawn_readiness", "readiness_confidence_threshold"):
             value = float(probe.get(key, 0.0))
             if not 0.0 <= value <= 1.0:
@@ -52,9 +50,6 @@ def load_config(path: Path) -> dict[str, Any]:
             raise ValueError(
                 "probe.deferral_until_revealed_tokens must be non-negative"
             )
-        mean_field = probe.get("mean_field", {})
-        if mean_field and int(mean_field.get("topk", 1)) <= 0:
-            raise ValueError("probe.mean_field.topk must be positive")
         dawn = probe.get("dawn", {})
         if int(dawn.get("block_length", 32)) <= 0:
             raise ValueError("probe.dawn.block_length must be positive")

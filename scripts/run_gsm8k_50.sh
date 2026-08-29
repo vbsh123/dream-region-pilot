@@ -19,15 +19,15 @@ python -m dream_region_pilot.run_gsm8k \
     loose_wavefront \
     mean_field_repro \
     controlled_position \
-    controlled_dapd \
-    controlled_jsd \
-    controlled_combo \
+    controlled_position_tail_guard \
+    always_on_tail_guard \
+    always_on_coupled_defer_tail_guard \
   --probe-window 8 \
   --spawn-readiness 0.15 \
   --readiness-confidence-threshold 0.5 \
-  --max-progress-gap 8 \
-  --edge-persistence 2 \
-  --dependency-recompute-interval 4 \
+  --max-progress-gap 4 \
+  --deferral-confidence-threshold 0.4 \
+  --deferral-until-revealed-tokens 2 \
+  --max-global-deferral-iterations 4 \
   --diagnostic-examples 3 \
-  --diagnostic-snapshot-interval 4 \
   "$@"

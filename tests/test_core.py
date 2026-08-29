@@ -11,13 +11,10 @@ from dream_region_pilot.commit import (
     commit_active_regions_dawn,
     dawn_region_transfer_mask,
     describe_commitments,
+    local_transfer_count,
     sample_tokens,
 )
 from dream_region_pilot.config import load_config
-from dream_region_pilot.dependencies import (
-    aggregate_region_dependencies,
-    threshold_region_graph,
-)
 from dream_region_pilot.evaluation import summarize
 from dream_region_pilot.decoding import decode_official_dawn, predicted_tail_region
 from dream_region_pilot.regions import build_fixed_regions
@@ -25,8 +22,8 @@ from dream_region_pilot.scheduler import RegionScheduler, parse_strategy
 from dream_region_pilot.mean_field import (
     exact_jsd_interaction,
     mean_field_commit_indices,
-    topk_tail_jsd_dependency,
 )
+from dream_region_pilot.model_adapter import shift_logits_dream
 
 
 def test_fixed_regions_exclude_prompt_by_construction():
@@ -38,6 +35,28 @@ def test_fixed_regions_exclude_prompt_by_construction():
     ]
 
 
+def test_local_dream_logit_shift_matches_position_alignment():
+    logits = torch.tensor([[[1.0], [2.0], [3.0]]])
+    shifted = shift_logits_dream(logits)
+    assert torch.equal(shifted, torch.tensor([[[1.0], [1.0], [2.0]]]))
+
+
+def test_32_token_local_dream_schedule_has_expected_transfer_quotas():
+    remaining = 32
+    quotas = []
+    for schedule_step in range(32):
+        quota = local_transfer_count(
+            remaining,
+            schedule_step=schedule_step,
+            local_steps=32,
+            eps=0.001,
+        )
+        quotas.append(quota)
+        remaining -= quota
+    assert quotas == [0] + [1] * 30 + [2]
+    assert remaining == 0
+
+
 def test_config_rejects_invalid_bounded_deferral_settings(tmp_path):
     config = tmp_path / "invalid.yaml"
     config.write_text(
@@ -45,7 +64,7 @@ def test_config_rejects_invalid_bounded_deferral_settings(tmp_path):
 model: {}
 data: {task: gsm8k}
 generation: {region_size: 32, steps: 32, max_new_tokens: 32}
-dependency: {}
+sources: {}
 experiment: {}
 probe: {deferral_confidence_threshold: 1.1, max_region_deferrals: -1}
 """,
@@ -67,7 +86,7 @@ def test_config_accepts_intermediate_region_sizes(tmp_path):
 model: {{}}
 data: {{task: gsm8k}}
 generation: {{region_size: {region_size}, steps: 32, max_new_tokens: 256}}
-dependency: {{}}
+sources: {{}}
 experiment: {{}}
 """,
             encoding="utf-8",
@@ -83,7 +102,7 @@ def test_config_rejects_negative_deferral_reveal_cutoff(tmp_path):
 model: {}
 data: {task: gsm8k}
 generation: {region_size: 32, steps: 32, max_new_tokens: 32}
-dependency: {}
+sources: {}
 experiment: {}
 probe: {deferral_until_revealed_tokens: -1}
 """,
@@ -211,44 +230,11 @@ def test_lm_eval_gsm8k_cot_strict_and_flexible_filters():
     assert method == "lm_eval_gsm8k_cot_flexible_extract"
 
 
-def test_region_aggregators_and_positional_orientation():
-    regions = build_fixed_regions(4, 2)
-    dependency = torch.zeros(4, 4)
-    dependency[:2, 2:] = 0.75
-    dependency[2:, :2] = 0.75
-    matrix = aggregate_region_dependencies(dependency, regions, method="mean")
-    parents, edges = threshold_region_graph(matrix, threshold=0.5)
-    assert parents == {0: set(), 1: {0}}
-    assert edges == [{"left": 0, "right": 1, "score": 0.75}]
-
-
-def test_lag_one_pipeline_and_terminal_release():
-    regions = build_fixed_regions(6, 2)
-    scheduler = RegionScheduler(
-        regions, mode="fixed_lag", lag=1, release_completed_parents=True
-    )
-    scheduler.set_parents({0: set(), 1: {0}, 2: {1}})
-    assert [region.index for region in scheduler.regions_allowed_to_advance(2)] == [0]
-    advanced = scheduler.apply_updates([regions[0]], {0: []})
-    assert advanced == []
-    assert regions[0].schedule_step == 1
-    assert regions[0].clock == 0
-    assert [region.index for region in scheduler.regions_allowed_to_advance(2)] == [0]
-    advanced = scheduler.apply_updates([regions[0]], {0: [0]})
-    assert advanced == [regions[0]]
-    assert regions[0].schedule_step == 2
-    assert regions[0].clock == 1
-    regions[0].remaining_mask_indices = ()
-    assert [region.index for region in scheduler.regions_allowed_to_advance(2)] == [1]
-    scheduler.apply_updates([regions[1]], {1: [2]})
-    assert [region.index for region in scheduler.regions_allowed_to_advance(2)] == [1, 2]
-
-
-def test_wavefront_admits_only_one_region_per_iteration():
+def test_loose_wavefront_admits_only_one_region_per_iteration():
     regions = build_fixed_regions(8, 2)
     scheduler = RegionScheduler(
         regions,
-        mode="wavefront_probe",
+        mode="loose_wavefront",
         max_active_regions=4,
         spawn_readiness=0.15,
     )
@@ -274,45 +260,22 @@ def test_flowblock_proxy_uses_a_two_region_active_window():
 
 
 def test_new_comparison_strategy_names_parse_without_changing_mode():
-    assert parse_strategy("always_on_tail_guard") == (
+    names = (
         "always_on_tail_guard",
-        0,
-    )
-    assert parse_strategy("flowblock_proxy") == ("flowblock_proxy", 0)
-    assert parse_strategy("loose_wavefront") == ("loose_wavefront", 0)
-    assert parse_strategy("controlled_position") == ("controlled_position", 0)
-    assert parse_strategy("controlled_position_tail_guard") == (
+        "flowblock_proxy",
+        "loose_wavefront",
+        "controlled_position",
         "controlled_position_tail_guard",
-        0,
-    )
-    assert parse_strategy("controlled_dapd_dynamic") == (
-        "controlled_dapd_dynamic",
-        0,
-    )
-    assert parse_strategy("always_on_bounded_defer") == (
         "always_on_bounded_defer",
-        0,
-    )
-    assert parse_strategy("always_on_bounded_defer_tail_guard") == (
         "always_on_bounded_defer_tail_guard",
-        0,
-    )
-    assert parse_strategy("always_on_coupled_defer") == (
         "always_on_coupled_defer",
-        0,
-    )
-    assert parse_strategy("always_on_coupled_defer_tail_guard") == (
         "always_on_coupled_defer_tail_guard",
-        0,
-    )
-    assert parse_strategy("always_on_dawn_tail_guard") == (
+        "always_on_coupled_defer_stop_filter",
+        "always_on_coupled_defer_stop_defer",
         "always_on_dawn_tail_guard",
-        0,
-    )
-    assert parse_strategy("always_on_coupled_defer_dawn_tail_guard") == (
         "always_on_coupled_defer_dawn_tail_guard",
-        0,
     )
+    assert [parse_strategy(name) for name in names] == list(names)
 
 
 def test_dawn_conflict_selection_stops_after_suppressing_neighbors():
@@ -444,23 +407,6 @@ def test_official_dawn_wrapper_uses_released_decoder_settings():
     assert model.kwargs["conf_threshold"] == 0.8
 
 
-def test_mean_field_jsd_signal_is_symmetric_and_zero_diagonal():
-    logits = torch.tensor(
-        [[[8.0, 0.0, 0.0], [8.0, 0.0, 0.0], [0.0, 8.0, 0.0]]]
-    )
-    raw_matrix, matrix, metadata = topk_tail_jsd_dependency(
-        logits,
-        torch.tensor([[True, True, True]]),
-        topk=3,
-        pair_chunk_size=2,
-    )
-    assert torch.allclose(matrix, matrix.T)
-    assert torch.equal(matrix.diag(), torch.zeros(3))
-    assert matrix[0, 1] > matrix[0, 2]
-    assert raw_matrix[0, 1] > raw_matrix[0, 2]
-    assert metadata["paper_exact"] is True
-
-
 def test_exact_mean_field_algorithm_selects_and_has_progress_fallback():
     logits = torch.tensor([[8.0, 0.0, 0.0], [7.0, 0.0, 0.0]])
     interaction = exact_jsd_interaction(logits, pair_chunk_size=1)
@@ -493,10 +439,9 @@ def test_controlled_scheduler_prioritizes_a_lagging_child_without_equalizing():
     regions = build_fixed_regions(8, 4)
     scheduler = RegionScheduler(
         regions,
-        mode="controlled_dapd",
+        mode="controlled_position",
         max_active_regions=2,
         max_progress_gap=2,
-        edge_persistence=2,
     )
     scheduler.admitted_count = 2
     regions[0].remaining_mask_indices = (3,)
@@ -520,7 +465,6 @@ def test_position_control_uses_only_adjacent_edges():
         region.index for region in scheduler.regions_allowed_to_advance(4)
     ] == [0, 1, 2]
     assert scheduler.last_control_edges == {(0, 1), (1, 2)}
-    assert scheduler.active_dependency_edges == set()
 
 
 def test_tail_guard_can_exclude_provisional_tail_without_blocking_parent():
@@ -584,6 +528,40 @@ def test_coupled_deferral_forces_the_lagging_endpoint_at_gap():
     assert scheduler.admitted_count == 2
 
 
+def test_stop_stalled_child_does_not_pause_its_parent_at_gap():
+    regions = build_fixed_regions(16, 8)
+    scheduler = RegionScheduler(
+        regions,
+        mode="always_on_coupled_defer_stop_defer",
+        max_progress_gap=4,
+    )
+    regions[0].remaining_mask_indices = (4, 5, 6, 7)
+    regions[1].remaining_mask_indices = tuple(range(8, 16))
+    allowed = scheduler.regions_allowed_to_advance(
+        8, progress_gap_exempt_children={1}
+    )
+    assert [region.index for region in allowed] == [0, 1]
+    assert scheduler.last_blocked_regions == set()
+    assert scheduler.last_urgent_regions == set()
+
+
+def test_coupled_tail_guard_starts_all_regions_but_excludes_tail_suffix():
+    regions = build_fixed_regions(16, 4)
+    scheduler = RegionScheduler(
+        regions,
+        mode="always_on_coupled_defer_tail_guard",
+        max_progress_gap=4,
+    )
+    assert scheduler.admitted_count == 4
+    assert [
+        region.index
+        for region in scheduler.regions_allowed_to_advance(
+            4, max_region_exclusive=2
+        )
+    ] == [0, 1]
+    assert scheduler.last_control_edges == {(0, 1)}
+
+
 def test_coupled_deferral_forced_reason_bypasses_low_confidence():
     regions = build_fixed_regions(4, 4)
     regions[0].schedule_step = 1
@@ -614,6 +592,38 @@ def test_coupled_deferral_forced_reason_bypasses_low_confidence():
     )
     assert len(committed[0]) == 1
     assert decisions[0]["action"] == "gap_forced"
+
+
+def test_closed_startup_window_bypasses_low_confidence():
+    regions = build_fixed_regions(4, 4)
+    regions[0].schedule_step = 1
+    mask_id = 2
+    tokens = torch.full((1, 4), mask_id, dtype=torch.long)
+    logits = torch.tensor(
+        [[[0.0, 0.0, -10.0]] * 4], dtype=torch.float32
+    )
+    decisions = []
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        deferral_confidence_threshold=0.8,
+        max_region_deferrals=None,
+        region_deferral_counts={0: 0},
+        deferral_decisions=decisions,
+        force_region_reasons={0: "deferral_window_closed"},
+    )
+    assert len(committed[0]) == 1
+    assert decisions[0]["action"] == "deferral_window_closed_forced"
 
 
 def test_bounded_deferral_skips_then_forces_the_ordinary_update():
@@ -718,6 +728,114 @@ def test_bounded_deferral_does_not_count_natural_zero_quota():
     assert deferral_counts == {0: 0}
 
 
+def _stop_protection_fixture():
+    regions = build_fixed_regions(4, 4)
+    regions[0].schedule_step = 1
+    mask_id = 4
+    tokens = torch.full((1, 4), mask_id, dtype=torch.long)
+    # R0's ordinary entropy-ranked position is position 0 and proposes EOS=3.
+    # Position 1 is the strongest non-stop alternative.
+    logits = torch.tensor(
+        [
+            [
+                [0.0, 0.0, 0.0, 8.0, -10.0],
+                [7.0, 0.0, 0.0, 0.0, -10.0],
+                [1.0, 0.0, 0.0, 0.0, -10.0],
+                [0.0, 0.0, 0.0, 0.0, -10.0],
+            ]
+        ],
+        dtype=torch.float32,
+    )
+    return regions, mask_id, tokens, logits
+
+
+def test_stop_filter_backfills_with_best_non_stop_candidate():
+    regions, mask_id, tokens, logits = _stop_protection_fixture()
+    decisions = []
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        force_region_reasons={0: "gap"},
+        stop_protection_mode="filter",
+        stop_token_ids={3},
+        stop_protected_regions={0},
+        stop_protection_decisions=decisions,
+    )
+    assert committed == {0: [1]}
+    assert tokens.tolist() == [[4, 0, 4, 4]]
+    assert decisions == [
+        {
+            "region": 0,
+            "action": "stop_filtered",
+            "scheduled_quota": 1,
+            "committed_quota": 1,
+            "stop_candidates": 1,
+            "hold_schedule": False,
+        }
+    ]
+
+
+def test_stop_defer_beats_gap_force_and_does_not_backfill():
+    regions, mask_id, tokens, logits = _stop_protection_fixture()
+    decisions = []
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        force_region_reasons={0: "gap"},
+        stop_protection_mode="defer",
+        stop_token_ids={3},
+        stop_protected_regions={0},
+        stop_protection_decisions=decisions,
+    )
+    assert committed == {0: []}
+    assert tokens.tolist() == [[4, 4, 4, 4]]
+    assert decisions[0]["action"] == "stop_deferred"
+    assert decisions[0]["hold_schedule"] is True
+
+
+def test_stop_defer_allows_stop_after_left_prefix_finishes():
+    regions, mask_id, tokens, logits = _stop_protection_fixture()
+    committed = commit_active_regions(
+        tokens,
+        logits,
+        prompt_length=0,
+        mask_token_id=mask_id,
+        regions=regions,
+        local_steps=4,
+        eps=0.001,
+        temperature=0.0,
+        top_p=None,
+        top_k=None,
+        policy="entropy",
+        alg_temp=0.0,
+        stop_protection_mode="defer",
+        stop_token_ids={3},
+        stop_protected_regions=set(),
+    )
+    assert committed == {0: [0]}
+    assert tokens.tolist() == [[3, 4, 4, 4]]
+
+
 def test_predicted_tail_region_uses_earliest_masked_stop():
     regions = build_fixed_regions(8, 4)
     logits = torch.zeros((1, 10, 5))
@@ -735,132 +853,11 @@ def test_predicted_tail_region_uses_earliest_masked_stop():
     ) == 1
 
 
-def test_dependency_edge_requires_real_progress_and_two_observations():
-    regions = build_fixed_regions(8, 4)
-    scheduler = RegionScheduler(
-        regions,
-        mode="controlled_dapd",
-        max_active_regions=2,
-        edge_persistence=2,
-    )
-    scheduler.admitted_count = 2
-    edge = [{"left": 0, "right": 1, "score": 1.0}]
-    scheduler.observe_dependency_edges(edge)
-    assert scheduler.active_dependency_edges == set()
-    regions[0].remaining_mask_indices = (1, 2, 3)
-    regions[1].remaining_mask_indices = (5, 6, 7)
-    scheduler.observe_dependency_edges(edge)
-    assert scheduler.active_dependency_edges == set()
-    scheduler.observe_dependency_edges(edge)
-    assert scheduler.active_dependency_edges == {(0, 1)}
-
-
-def test_dynamic_commit_groups_follow_current_dependency_components():
-    regions = build_fixed_regions(8, 2)
-    scheduler = RegionScheduler(regions, mode="controlled_dapd_dynamic")
-    scheduler.active_dependency_edges = {(0, 1), (1, 2)}
-    assert [
-        [region.index for region in group]
-        for group in scheduler.commitment_groups(regions)
-    ] == [[0, 1, 2], [3]]
-
-    scheduler.active_dependency_edges = {(2, 3)}
-    assert [
-        [region.index for region in group]
-        for group in scheduler.commitment_groups(regions)
-    ] == [[0], [1], [2, 3]]
-
-
-def test_pooled_component_selects_jointly_instead_of_per_region():
-    regions = build_fixed_regions(8, 4)
-    for region in regions:
-        region.schedule_step = 1
-    mask_id = 2
-    tokens = torch.full((1, 8), mask_id, dtype=torch.long)
-    logits = torch.tensor(
-        [
-            [
-                [8.0, 0.0, -8.0],
-                [7.0, 0.0, -8.0],
-                [2.0, 1.0, -8.0],
-                [2.0, 1.0, -8.0],
-                [1.1, 1.0, -8.0],
-                [1.1, 1.0, -8.0],
-                [1.1, 1.0, -8.0],
-                [1.1, 1.0, -8.0],
-            ]
-        ]
-    )
-    committed = commit_active_regions(
-        tokens,
-        logits,
-        prompt_length=0,
-        mask_token_id=mask_id,
-        regions=regions,
-        local_steps=4,
-        eps=0.001,
-        temperature=0.0,
-        top_p=None,
-        top_k=None,
-        policy="entropy",
-        alg_temp=0.0,
-        region_groups=[regions],
-    )
-    assert len(committed[0]) == 2
-    assert committed[1] == []
-
-
-def test_pooled_component_cannot_spend_a_regions_terminal_budget_elsewhere():
-    regions = build_fixed_regions(8, 4)
-    regions[0].schedule_step = 3
-    regions[1].schedule_step = 1
-    mask_id = 2
-    tokens = torch.full((1, 8), mask_id, dtype=torch.long)
-    logits = torch.tensor(
-        [
-            [
-                [1.1, 1.0, -8.0],
-                [1.1, 1.0, -8.0],
-                [1.1, 1.0, -8.0],
-                [1.1, 1.0, -8.0],
-                [8.0, 0.0, -8.0],
-                [7.0, 0.0, -8.0],
-                [6.0, 0.0, -8.0],
-                [5.0, 0.0, -8.0],
-            ]
-        ]
-    )
-    committed = commit_active_regions(
-        tokens,
-        logits,
-        prompt_length=0,
-        mask_token_id=mask_id,
-        regions=regions,
-        local_steps=4,
-        eps=0.001,
-        temperature=0.0,
-        top_p=None,
-        top_k=None,
-        policy="entropy",
-        alg_temp=0.0,
-        region_groups=[regions],
-    )
-
-    assert committed[0] == [0, 1, 2, 3]
-    assert committed[1] == [4]
-    RegionScheduler.apply_updates(regions, committed)
-    assert regions[0].schedule_step == 4
-    assert regions[0].clock == 1
-    assert regions[1].schedule_step == 2
-    assert regions[1].clock == 1
-
-
 def test_summary_reports_measured_throughput_and_vanilla_speedups():
     common = {
         "correct": True,
         "average_tokens_committed_per_forward": 1.0,
         "canvas_tokens": 256,
-        "dependency_seconds": 0.0,
     }
     summary = summarize(
         [
