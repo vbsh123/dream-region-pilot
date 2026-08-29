@@ -2,6 +2,10 @@
 # Source: external/DAWN/dream/eval_instruct.sh at pinned revision 19c32c2.
 model:
   name_or_path: Dream-org/Dream-v0-Instruct-7B
+  # DAWN's reported Original baseline is implemented by its pinned Dream fork,
+  # whose entropy path decodes eight 32-token blocks sequentially. The ordinary
+  # Hugging Face Dream backend is a different global-canvas decoder.
+  implementation: dawn_release
   revision: 05334cb9faaf763692dcf9d8737c642be2b2a6ae
   dtype: bfloat16
   device: cuda

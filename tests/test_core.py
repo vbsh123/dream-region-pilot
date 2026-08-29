@@ -131,6 +131,42 @@ experiment: {{}}
         assert loaded["generation"]["region_size"] == region_size
 
 
+def test_config_accepts_explicit_dawn_model_implementation(tmp_path):
+    config = tmp_path / "dawn-backend.yaml"
+    config.write_text(
+        """
+model: {implementation: dawn_release}
+data: {task: gsm8k}
+generation: {region_size: 32, steps: 256, max_new_tokens: 256}
+sources: {}
+experiment: {}
+""",
+        encoding="utf-8",
+    )
+    loaded = load_config(config)
+    assert loaded["model"]["implementation"] == "dawn_release"
+
+
+def test_config_rejects_unknown_model_implementation(tmp_path):
+    config = tmp_path / "bad-backend.yaml"
+    config.write_text(
+        """
+model: {implementation: accidental_backend}
+data: {task: gsm8k}
+generation: {region_size: 32, steps: 256, max_new_tokens: 256}
+sources: {}
+experiment: {}
+""",
+        encoding="utf-8",
+    )
+    try:
+        load_config(config)
+    except ValueError as error:
+        assert "model.implementation" in str(error)
+    else:
+        raise AssertionError("unknown model implementation was accepted")
+
+
 def test_config_rejects_negative_deferral_reveal_cutoff(tmp_path):
     config = tmp_path / "invalid-cutoff.yaml"
     config.write_text(

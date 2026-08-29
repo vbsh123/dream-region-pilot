@@ -14,6 +14,13 @@ def load_config(path: Path) -> dict[str, Any]:
         if not isinstance(config.get(section), dict):
             raise ValueError(f"Missing mapping section {section!r}")
     generation = config["generation"]
+    model_implementation = str(
+        config["model"].get("implementation", "huggingface_remote")
+    )
+    if model_implementation not in {"huggingface_remote", "dawn_release"}:
+        raise ValueError(
+            "model.implementation must be huggingface_remote or dawn_release"
+        )
     task = str(config["data"].get("task", "gsm8k"))
     if task not in {"gsm8k", "asdiv", "math500", "humaneval"}:
         raise ValueError("data.task must be gsm8k, asdiv, math500, or humaneval")

@@ -133,8 +133,12 @@ python -m dream_region_pilot.run_gsm8k \
 ```
 
 This protocol is intentionally separate from the official Dream zero-shot CoT
-configuration. Its five-shot sampler uses lm-eval's seed 1234 and advances once
-per test document, including skipped indices in targeted diagnostic runs.
+configuration. It explicitly loads the pinned DAWN Dream fork for every listed
+strategy. In this configuration, `vanilla` means DAWN's released `Original`
+entropy baseline: eight sequential 32-token blocks, 32 local steps per block,
+and 256 model forwards. The five-shot sampler uses lm-eval's seed 1234 and
+advances once per test document, including skipped indices in targeted
+diagnostic runs.
 
 ## Other benchmarks
 

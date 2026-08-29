@@ -246,7 +246,20 @@ def main() -> None:
         config["data"], [index for index, _ in dataset_items]
     )
     source_config = config["sources"]
-    uses_dawn = any("dawn" in strategy for strategy in strategies)
+    model_implementation = str(
+        config["model"].get("implementation", "huggingface_remote")
+    )
+    # Backend selection must be explicit for released-protocol reproductions.
+    # Inferring it only from strategy names silently ran DAWN's five-shot
+    # prompt through Hugging Face Dream's different global generation backend
+    # whenever the requested comparison omitted a strategy named "dawn".
+    uses_dawn = (
+        model_implementation == "dawn_release"
+        or any("dawn" in strategy for strategy in strategies)
+    )
+    resolved_model_implementation = (
+        "dawn_release" if uses_dawn else "huggingface_remote"
+    )
     dawn_repo = Path(source_config.get("dawn_repo", "external/DAWN"))
     dawn_revision = str(
         source_config.get(
@@ -374,6 +387,7 @@ def main() -> None:
                     "example_index": example_index,
                     "task": task,
                     "strategy": strategy,
+                    "model_implementation": resolved_model_implementation,
                     "seed": seed,
                     "question": question,
                     "reference_answer": reference,
@@ -401,6 +415,7 @@ def main() -> None:
         "task": task,
         "strategies": strategies,
         "model_resolved_commit": getattr(model.config, "_commit_hash", None),
+        "model_implementation": resolved_model_implementation,
         "transformers_version": transformers.__version__,
         "dawn_revision": dawn_revision if uses_dawn else None,
         "implementation_notes": [
@@ -431,6 +446,7 @@ def main() -> None:
             "For the two stop-aware strategies only, the first actually committed stop token latches the endpoint. Positions after it are ignored, holes before it continue decoding, and generation terminates once that prefix contains no masks. Synthetic suffix completion is not counted as model commitment.",
             "Regional DAWN strategies load the pinned official DAWN Dream model fork and use its one-forward late-layer averaged attention scores. The model still has full-canvas visibility.",
             "official_dawn calls the pinned released DAWN sequential 32-token-block decoder directly with its released Dream GSM8K thresholds, temperature zero, and no top-p/top-k filtering. It changes no regional scheduling code and reports DAWN's returned actual NFE.",
+            "When model.implementation is dawn_release, every strategy uses the pinned DAWN Dream model fork. In that configuration, vanilla reproduces DAWN's released Original entropy path: eight sequential 32-token blocks, 32 local steps per block, and 256 actual forward passes.",
             "always_on_dawn_tail_guard applies DAWN's anchor/conflict token selector independently to every unguarded region; always_on_coupled_defer_dawn_tail_guard adds the existing startup deferral and adjacent revealed-token backpressure.",
             "The regional DAWN selector uses the official GSM8K thresholds (sink 0.03, edge 0.10, induced 0.75, candidate confidence 0.80, high confidence 0.90) unless overridden.",
             "DAWN threshold confidence is computed from raw untempered logits, matching DAWN's released temperature-zero operating point. Token predictions retain this experiment's configured Dream sampler so the ablation changes selection rather than silently changing the benchmark sampling protocol.",

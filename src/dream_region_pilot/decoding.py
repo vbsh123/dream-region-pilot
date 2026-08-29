@@ -170,18 +170,24 @@ def decode_vanilla(
     synchronize(device)
     started = time.perf_counter()
     attention_mask = prompt.ne(tokenizer.pad_token_id)
-    output = model.diffusion_generate(
-        prompt,
-        attention_mask=attention_mask,
-        max_new_tokens=int(generation["max_new_tokens"]),
-        steps=int(generation["steps"]),
-        alg=str(generation["commit_policy"]),
-        alg_temp=generation.get("alg_temp"),
-        temperature=float(generation.get("temperature", 0.0)),
-        top_p=generation.get("top_p"),
-        top_k=generation.get("top_k"),
-        return_dict_in_generate=True,
-    )
+    generation_kwargs = {
+        "attention_mask": attention_mask,
+        "max_new_tokens": int(generation["max_new_tokens"]),
+        "steps": int(generation["steps"]),
+        "alg": str(generation["commit_policy"]),
+        "alg_temp": generation.get("alg_temp"),
+        "temperature": float(generation.get("temperature", 0.0)),
+        "top_p": generation.get("top_p"),
+        "top_k": generation.get("top_k"),
+        "return_dict_in_generate": True,
+    }
+    is_dawn_release = model.__class__.__module__ == "model.modeling_dream"
+    if is_dawn_release:
+        # DAWN's released Original baseline relies on this fork's sequential
+        # block sampler and its default 32-token blocks. Keep it explicit so a
+        # future upstream default change cannot silently alter the protocol.
+        generation_kwargs["block_length"] = 32
+    output = model.diffusion_generate(prompt, **generation_kwargs)
     synchronize(device)
     elapsed = time.perf_counter() - started
 
@@ -215,6 +221,11 @@ def decode_vanilla(
         "mean_field_seconds": 0.0,
         "diagnostic_seconds_excluded_from_wall_clock": 0.0,
         "schedule_approximation": False,
+        "decoder_implementation": (
+            "dawn_release_original_sequential_blocks"
+            if is_dawn_release
+            else "huggingface_dream_global"
+        ),
     }
 
 
