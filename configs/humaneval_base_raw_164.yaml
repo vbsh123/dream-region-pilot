@@ -1,0 +1,46 @@
+model:
+  name_or_path: Dream-org/Dream-v0-Base-7B
+  dtype: bfloat16
+  device: cuda
+  trust_remote_code: true
+
+data:
+  task: humaneval
+  dataset: openai/openai_humaneval
+  subset: null
+  split: test
+  limit: 164
+  allow_code_execution: true
+  execution_timeout_seconds: 3.0
+  prompt_template: "{question}"
+  apply_chat_template: false
+  prepend_bos_token: true
+  add_special_tokens: false
+
+generation:
+  max_new_tokens: 256
+  steps: 256
+  region_size: 32
+  local_steps: 32
+  eps: 0.001
+  temperature: 0.0
+  top_p: null
+  top_k: null
+  commit_policy: entropy
+  alg_temp: 0.0
+  seed: 1234
+
+sources: {}
+
+probe:
+  max_active_regions: 8
+  spawn_readiness: 0.15
+  readiness_confidence_threshold: 0.50
+  max_progress_gap: 8
+
+experiment:
+  strategies:
+    - vanilla
+    - always_on_tail_guard
+  rotate_strategy_order: true
+  diagnostic_examples: 0
