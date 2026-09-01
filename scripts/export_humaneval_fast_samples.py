@@ -40,7 +40,13 @@ def main() -> None:
             {
                 "doc_id": example_index,
                 "doc": document,
-                "target": document["test"],
+                # Match lm-eval's HumanEval doc_to_target exactly. The dataset's
+                # ``test`` field only defines ``check``; this final call is what
+                # actually executes the assertions against the generated entry
+                # point.
+                "target": (
+                    f"{document['test']}\ncheck({document['entry_point']})"
+                ),
                 "resps": [[str(row["generation"])]],
             }
         )
